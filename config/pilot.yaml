@@ -1,0 +1,75 @@
+schema_version: 1
+
+paths:
+  source_root: "D:/RAG TEST"
+  runtime_root: "runtime"
+
+ingestion:
+  supported_extensions:
+    - ".txt"
+    - ".md"
+    - ".csv"
+    - ".json"
+    - ".xml"
+    - ".htm"
+    - ".html"
+    - ".docx"
+    - ".pdf"
+  chunk_chars: 450
+  chunk_overlap_chars: 80
+  min_chunk_chars: 80
+  pdf_max_pages: 250
+  max_file_mb: 200
+  max_extracted_chars: 5000000
+
+embedding:
+  model_id: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+  revision: "e8f8c211226b894fcb81acc59f3b34ba3efd5f42"
+  dimension: 384
+  batch_size: 24
+  device: "auto"
+  query_prefix: ""
+  passage_prefix: ""
+
+qdrant:
+  mode: "embedded"
+  collection_name: "secure_rag_pilot_minilm_v1"
+  url: null
+
+retrieval:
+  top_k: 5
+  access_group: "pilot"
+  score_threshold: null
+
+sanitization:
+  marker_pattern_version: 1
+  fail_on_unknown_marker: true
+  regex_enabled: true
+  models:
+    - name: "legal"
+      model_id: "LLAIMlegal/ru-legal-ner"
+      revision: "c0313a42ac147ccc38f5c3b0b3e77cab53208683"
+      local_path: "runtime/model-cache/ner/legal-c0313a42"
+      enabled: true
+      threshold: 0.60
+      device: "auto"
+      priority: 200
+    - name: "collection3"
+      model_id: "viktor-shcherb/sberbank-rubert-base-collection3"
+      revision: "65ccbf8d2d25229c3858631bb24bb794c0c6907c"
+      local_path: null
+      enabled: true
+      threshold: 0.70
+      device: "auto"
+      priority: 100
+    - name: "gliner"
+      model_id: ""
+      revision: ""
+      local_path: null
+      enabled: false
+      threshold: 0.70
+      device: "auto"
+      priority: 50
+
+bridge:
+  max_output_chars: 200000

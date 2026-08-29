@@ -1,0 +1,24 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.env
+
+# Private/runtime data: never commit.
+runtime/*
+!runtime/.gitkeep
+models/
+data/
+*.sqlite
+*.sqlite3
+*.db
+*.log
+
+# Editors and OS.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

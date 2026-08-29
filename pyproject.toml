@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "secure-rag"
+version = "0.1.0"
+description = "Local secure RAG learning prototype with Qdrant and reversible sanitization"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "beautifulsoup4>=4.13,<5",
+  "numpy>=2.0,<3",
+  "pydantic>=2.10,<3",
+  "pypdf>=6.0,<7",
+  "python-docx>=1.1,<2",
+  "PyYAML>=6.0,<7",
+  "qdrant-client>=1.15,<2",
+  "sentence-transformers>=5.1,<6",
+  "torch>=2.6,<3",
+  "transformers>=4.57,<5",
+]
+
+[project.optional-dependencies]
+web = ["streamlit>=1.49,<2"]
+dev = ["pytest>=8.3,<10", "ruff>=0.12,<1"]
+
+[project.scripts]
+secure-rag = "secure_rag.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/secure_rag"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
