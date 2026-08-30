@@ -50,4 +50,7 @@ def create_vector_store(config: AppConfig, dimension: int) -> QdrantStore:
         dimension,
         url=config.qdrant.url if config.qdrant.mode == "server" else None,
         api_key=os.getenv("SECURE_RAG_QDRANT_API_KEY") or None,
+        timeout_seconds=config.qdrant.timeout_seconds,
+        write_max_attempts=config.qdrant.write_max_attempts,
+        retry_backoff_seconds=config.qdrant.retry_backoff_seconds,
     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 from dataclasses import asdict
@@ -12,24 +13,51 @@ from .config import AppConfig, load_config
 from .factory import create_embedder, create_gateway, create_vector_store
 from .indexer import Indexer
 from .manifest import ManifestStore
+from .models import IndexProgress
 from .pipeline import SecureRagPipeline
 from .retrieval import Retriever
+
+_SAFE_ERROR_CODE_RE = re.compile(r"^[a-z0-9_]{1,80}$")
 
 
 def _safe_print(value: dict[str, object]) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
 
-def _index(config: AppConfig, max_files: int | None) -> int:
+def _safe_jsonl(value: dict[str, object]) -> None:
+    """Emit one machine-readable record without source-derived content."""
+
+    print(json.dumps(value, ensure_ascii=False, separators=(",", ":")), flush=True)
+
+
+def _safe_progress(event: IndexProgress) -> None:
+    _safe_jsonl(asdict(event))
+
+
+def _index(
+    config: AppConfig,
+    max_files: int | None,
+    progress_every_files: int = 25,
+    progress_every_seconds: float = 10.0,
+    prune_missing: bool = False,
+) -> int:
     config.ensure_runtime()
     embedder = create_embedder(config)
     with (
         ManifestStore(config.manifest_path) as manifest,
         create_vector_store(config, embedder.dimension) as vector_store,
     ):
-        report = Indexer(config, embedder, manifest, vector_store).run(max_files=max_files)
+        report = Indexer(config, embedder, manifest, vector_store).run(
+            max_files=max_files,
+            progress=_safe_progress,
+            progress_every_files=progress_every_files,
+            progress_every_seconds=progress_every_seconds,
+            prune_missing=prune_missing,
+        )
     safe = asdict(report)
-    _safe_print(safe)
+    # Index progress is commonly redirected to a .jsonl audit log. Keep the final
+    # report on one line as well, so every emitted line can be parsed independently.
+    _safe_jsonl(safe)
     return 0 if report.failed == 0 else 2
 
 
@@ -118,11 +146,35 @@ def build_parser() -> argparse.ArgumentParser:
         default=10,
         help="Supported files to inspect; use 0 for all",
     )
+    index_parser.add_argument(
+        "--progress-every-files",
+        type=int,
+        default=25,
+        help="Emit aggregate progress after this many inspected files",
+    )
+    index_parser.add_argument(
+        "--progress-every-seconds",
+        type=float,
+        default=10.0,
+        help="Emit aggregate progress after this many seconds (checked between files)",
+    )
+    index_parser.add_argument(
+        "--prune-missing",
+        action="store_true",
+        help=(
+            "Delete points for unseen documents after a complete authoritative scan; "
+            "leave disabled for network or partially available sources"
+        ),
+    )
 
     ask_parser = subparsers.add_parser("ask", help="Prepare a sanitized Codex request")
     ask_parser.add_argument("question", nargs="?")
     ask_parser.add_argument("--question-file")
-    ask_parser.add_argument("--provider", choices=("manual", "stub"), default="manual")
+    ask_parser.add_argument(
+        "--provider",
+        choices=("auto", "responses", "codex-local", "manual", "stub"),
+        default="auto",
+    )
     ask_parser.add_argument(
         "--ner",
         choices=("all", "regex", "legal", "collection3"),
@@ -149,7 +201,13 @@ def main(argv: list[str] | None = None) -> int:
             max_files = None if args.max_files == 0 else args.max_files
             if max_files is not None and max_files < 1:
                 raise ValueError("--max-files must be positive or zero")
-            return _index(config, max_files)
+            return _index(
+                config,
+                max_files,
+                args.progress_every_files,
+                args.progress_every_seconds,
+                args.prune_missing,
+            )
         if args.command == "ask":
             return _ask(
                 config,
@@ -180,7 +238,9 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "status": "error",
                 "error_type": type(exc).__name__,
-                "message": str(exc),
+                "error_code": (
+                    str(exc) if _SAFE_ERROR_CODE_RE.fullmatch(str(exc)) else "operation_failed"
+                ),
                 "raw_document_content_printed": False,
             }
         )

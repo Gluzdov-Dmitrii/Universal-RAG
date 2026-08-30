@@ -14,6 +14,8 @@ ingestion:
     - ".htm"
     - ".html"
     - ".docx"
+    - ".xlsx"
+    - ".pptx"
     - ".pdf"
   chunk_chars: 450
   chunk_overlap_chars: 80
@@ -21,20 +23,24 @@ ingestion:
   pdf_max_pages: 250
   max_file_mb: 200
   max_extracted_chars: 5000000
+  persist_extracted_text_cache: false
 
 embedding:
-  model_id: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-  revision: "e8f8c211226b894fcb81acc59f3b34ba3efd5f42"
+  model_id: "intfloat/multilingual-e5-small"
+  revision: "614241f622f53c4eeff9890bdc4f31cfecc418b3"
   dimension: 384
-  batch_size: 24
+  batch_size: 64
   device: "auto"
-  query_prefix: ""
-  passage_prefix: ""
+  query_prefix: "query: "
+  passage_prefix: "passage: "
 
 qdrant:
-  mode: "embedded"
-  collection_name: "secure_rag_pilot_minilm_v1"
-  url: null
+  mode: "server"
+  collection_name: "secure_rag_pilot_e5_v1"
+  url: "http://127.0.0.1:6333"
+  timeout_seconds: 60
+  write_max_attempts: 3
+  retry_backoff_seconds: 0.25
 
 retrieval:
   top_k: 5

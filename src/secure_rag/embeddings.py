@@ -9,6 +9,7 @@ from typing import Protocol
 import numpy as np
 
 from .config import EmbeddingConfig
+from .hf_policy import hf_local_files_only
 
 
 class Embedder(Protocol):
@@ -36,6 +37,7 @@ def _resolve_device(device: str) -> str:
 
 class SentenceTransformerEmbedder:
     def __init__(self, config: EmbeddingConfig, cache_root: Path) -> None:
+        local_files_only = hf_local_files_only()
         from sentence_transformers import SentenceTransformer
 
         self._config = config
@@ -45,6 +47,7 @@ class SentenceTransformerEmbedder:
             cache_folder=str(cache_root),
             device=_resolve_device(config.device),
             trust_remote_code=False,
+            local_files_only=local_files_only,
         )
         actual = int(self._model.get_embedding_dimension())
         if actual != config.dimension:

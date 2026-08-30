@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 import uuid
 from datetime import UTC, datetime
@@ -17,6 +18,18 @@ REQUEST_ID_RE = re.compile(r"^[0-9a-f-]{36}$")
 
 def _canonical_json(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _atomic_write_text(path: Path, value: str) -> None:
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+            stream.write(value)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 class BridgeManager:
@@ -41,12 +54,26 @@ class BridgeManager:
         versions: dict[str, str | None],
         provider: str,
     ) -> BridgeResult:
+        provider_boundaries = {
+            "responses": "no-tools-api",
+            "codex-local": "unsafe-local-agent-readable-files",
+            "stub": "local-deterministic",
+            "manual": "human-controlled",
+        }
+        provider_boundary = provider_boundaries.get(provider)
+        if provider_boundary is None:
+            raise ValueError("unsupported_provider")
         request_id = str(uuid.uuid4())
         request_dir = self._request_dir(request_id)
         request_dir.mkdir(parents=False, exist_ok=False)
-        codex_input = request_dir / "codex_input.md"
-        codex_output = request_dir / "codex_output.md"
-        restored_output = request_dir / "restored_answer.md"
+        # Both files contain provider-controlled or untrusted source-derived text.
+        # Keep them plain text so local preview cannot execute Markdown/HTML URLs.
+        codex_input = request_dir / "codex_input.txt"
+        codex_output = request_dir / "codex_output.txt"
+        # Restored output contains private values and remains provider-controlled.
+        # A .txt file prevents accidental Markdown/HTML preview from turning a marker
+        # restored inside a URL into a network request carrying the private value.
+        restored_output = request_dir / "restored_answer.txt"
 
         rendered = self._render_codex_input(request_id, sanitized_question, contexts)
         PrivacyGateway.validate_outbound(rendered, state)
@@ -86,9 +113,11 @@ class BridgeManager:
                 }
                 for item in contexts
             ],
-            "human_review_required": True,
+            "human_review_required": provider == "manual",
+            "pilot_auto_send": provider in {"responses", "codex-local"},
             "contains_unmasked_known_values": False,
-            "security_claim": "known-detected-values-only; human review required",
+            "security_claim": "known-detected-values-only; NER recall is not guaranteed",
+            "provider_boundary": provider_boundary,
             "versions": versions,
         }
         (request_dir / "manifest.json").write_text(
@@ -126,7 +155,7 @@ class BridgeManager:
             ),
             "Сохраняйте маркеры вида [[TYPE_0001]] без изменений.",
             "Не придумывайте значения скрытых сущностей.",
-            "Верните результат в Markdown.",
+            "Верните только обычный текст без Markdown и HTML.",
             "",
             "## Вопрос",
             "",
@@ -174,32 +203,63 @@ class BridgeManager:
             state.value_to_marker[(label, value)] = marker
         return state
 
-    def restore_text(self, request_id: str, marked_text: str) -> Path:
+    def stage_response(self, request_id: str, marked_text: str) -> Path:
+        """Durably save a validated marked response before local restoration."""
+
         if len(marked_text) > self.config.bridge.max_output_chars:
             raise ValueError("Provider output is too large")
         state = self.load_state(request_id)
+        PrivacyGateway.validate_outbound(marked_text, state)
+        request_dir = self._request_dir(request_id)
+        output_path = request_dir / "codex_output.txt"
+        _atomic_write_text(output_path, marked_text)
+        manifest_path = request_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["status"] = "response_received"
+        manifest["response_sha256"] = hashlib.sha256(
+            marked_text.encode("utf-8")
+        ).hexdigest()
+        manifest["response_received_at"] = datetime.now(UTC).isoformat()
+        _atomic_write_text(
+            manifest_path,
+            json.dumps(manifest, ensure_ascii=False, indent=2),
+        )
+        return output_path
+
+    def restore_staged(self, request_id: str) -> Path:
+        request_dir = self._request_dir(request_id)
+        marked_path = request_dir / "codex_output.txt"
+        marked_text = marked_path.read_text(encoding="utf-8")
+        manifest_path = request_dir / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        expected_hash = manifest.get("response_sha256")
+        actual_hash = hashlib.sha256(marked_text.encode("utf-8")).hexdigest()
+        if not marked_text.strip() or expected_hash != actual_hash:
+            raise ValueError("Staged provider response is missing or incomplete")
+        state = self.load_state(request_id)
+        PrivacyGateway.validate_outbound(marked_text, state)
         restored = PrivacyGateway.restore(
             marked_text,
             state,
             fail_on_unknown=self.config.sanitization.fail_on_unknown_marker,
         )
-        request_dir = self._request_dir(request_id)
-        output_path = request_dir / "restored_answer.md"
-        (request_dir / "codex_output.md").write_text(marked_text, encoding="utf-8")
-        output_path.write_text(restored, encoding="utf-8")
-        manifest_path = request_dir / "manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        output_path = request_dir / "restored_answer.txt"
+        _atomic_write_text(output_path, restored)
         manifest["status"] = "restored"
         manifest["restored_at"] = datetime.now(UTC).isoformat()
-        manifest_path.write_text(
+        _atomic_write_text(
+            manifest_path,
             json.dumps(manifest, ensure_ascii=False, indent=2),
-            encoding="utf-8",
         )
         return output_path
 
+    def restore_text(self, request_id: str, marked_text: str) -> Path:
+        self.stage_response(request_id, marked_text)
+        return self.restore_staged(request_id)
+
     def restore_file(self, request_id: str, input_path: Path | None = None) -> Path:
         request_dir = self._request_dir(request_id)
-        path = input_path.resolve() if input_path else request_dir / "codex_output.md"
+        path = input_path.resolve() if input_path else request_dir / "codex_output.txt"
         marked_text = path.read_text(encoding="utf-8")
         if not marked_text.strip():
             raise ValueError("Codex output file is empty")

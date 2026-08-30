@@ -169,14 +169,26 @@ class ManifestStore:
             )
 
     def start_build(self, build_id: str, embedding_version: str, config_version: str) -> None:
-        self.connection.execute(
-            """
-            INSERT INTO builds (build_id, status, embedding_version, config_version)
-            VALUES (?, 'running', ?, ?)
-            """,
-            (build_id, embedding_version, config_version),
-        )
-        self.connection.commit()
+        # Indexer holds the process-wide build FileLock before calling this method.
+        # Therefore any older row still marked as running belongs to a process that
+        # terminated without reaching finish_build (for example after power loss).
+        # Closing those rows in the same transaction as the new row keeps build
+        # history truthful without treating a merely persistent lock file as active.
+        with self.connection:
+            self.connection.execute(
+                """
+                UPDATE builds
+                SET finished_at=CURRENT_TIMESTAMP, status='interrupted'
+                WHERE status='running'
+                """
+            )
+            self.connection.execute(
+                """
+                INSERT INTO builds (build_id, status, embedding_version, config_version)
+                VALUES (?, 'running', ?, ?)
+                """,
+                (build_id, embedding_version, config_version),
+            )
 
     def finish_build(
         self,
@@ -205,6 +217,20 @@ class ManifestStore:
         chunk_count = self.connection.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
         result["chunks"] = int(chunk_count)
         return result
+
+    def indexed_chunk_count(self, index_signature: str) -> int:
+        row = self.connection.execute(
+            """
+            SELECT COUNT(*)
+            FROM chunks AS c
+            JOIN documents AS d ON d.document_id = c.document_id
+            WHERE d.status = 'indexed'
+              AND d.index_signature = ?
+              AND d.indexed_revision = d.revision
+            """,
+            (index_signature,),
+        ).fetchone()
+        return int(row[0])
 
     def latest_build_id(self) -> str | None:
         row = self.connection.execute(

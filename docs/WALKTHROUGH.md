@@ -6,7 +6,7 @@
 2. Проиндексируйте 10 файлов.
 3. Задайте безопасный тестовый вопрос в режиме regex + mock.
 4. Откройте manifest.json: там версии и counters, но нет исходного текста.
-5. Откройте codex_input.md и restored_answer.md рядом.
+5. Откройте codex_input.txt и restored_answer.txt рядом как plain text.
 
 Цель: увидеть разницу между local raw retrieval и outbound sanitized context.
 
@@ -21,7 +21,7 @@
 - filename скрыт целиком;
 - runtime/marker-vault/REQUEST_ID.json содержит обратную таблицу и остаётся локально;
 - изменение marker на неизвестный блокирует demarker;
-- local mock возвращает исходные значения только в restored_answer.md.
+- local mock возвращает исходные значения только в restored_answer.txt.
 
 ## Урок 3 — сравнить NER
 
@@ -38,11 +38,19 @@
 ## Урок 4 — ручной Codex
 
 1. Выберите all + manual.
-2. Лично просмотрите codex_input.md.
+2. Лично просмотрите codex_input.txt как обычный текст, без Markdown preview.
 3. Передайте только этот файл в изолированный cloud-чат.
-4. Попросите вернуть Markdown и сохранить markers.
-5. Вставьте ответ в web demarker.
-6. Сравните cloud-ответ и local restored_answer.md.
+4. Попросите вернуть обычный текст и сохранить markers.
+5. Сохраните ответ как `runtime/requests/REQUEST_ID/codex_output.txt` и выполните
+   `secure-rag demark REQUEST_ID`.
+6. Сравните cloud-ответ и local restored_answer.txt.
+
+## Урок 4.1 — автоматический provider
+
+Сначала оставьте `SECURE_RAG_PROVIDER=auto` без `OPENAI_API_KEY`: должен отработать
+локальный stub. Затем задайте API key только в окружении процесса и повторите тест на
+вымышленных данных. В manifest проверьте `provider=responses` и
+`provider_boundary=no-tools-api`. Не используйте `codex-local` как privacy boundary.
 
 ## Урок 5 — первый retrieval eval
 

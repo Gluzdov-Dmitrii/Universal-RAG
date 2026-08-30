@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Protocol
 
 from ..config import NerModelConfig
+from ..hf_policy import hf_local_files_only
 from ..models import EntitySpan
 
 
@@ -46,6 +47,7 @@ def _pipeline_device(value: str) -> int | str:
 
 class TransformersNerDetector:
     def __init__(self, config: NerModelConfig, cache_root: Path) -> None:
+        local_files_only = hf_local_files_only()
         from transformers import (
             AutoModelForTokenClassification,
             AutoTokenizer,
@@ -83,6 +85,7 @@ class TransformersNerDetector:
             cache_dir=str(cache_root),
             use_fast=True,
             trust_remote_code=False,
+            local_files_only=local_files_only,
         )
         tokenizer.model_max_length = min(int(tokenizer.model_max_length), 512)
         self._tokenizer = tokenizer
@@ -94,6 +97,7 @@ class TransformersNerDetector:
             cache_dir=str(cache_root),
             trust_remote_code=False,
             use_safetensors=True,
+            local_files_only=local_files_only,
         )
         self._pipeline = pipeline(
             "token-classification",

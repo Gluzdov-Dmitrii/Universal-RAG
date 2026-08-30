@@ -1,10 +1,11 @@
+name: secure-rag
+
 services:
   qdrant:
     image: qdrant/qdrant:v1.19.0
     restart: unless-stopped
     ports:
       - "127.0.0.1:6333:6333"
-      - "127.0.0.1:6334:6334"
     volumes:
       - qdrant_storage:/qdrant/storage
     healthcheck:
@@ -12,6 +13,9 @@ services:
       interval: 10s
       timeout: 3s
       retries: 10
+      start_period: 10s
+    stop_grace_period: 30s
 
 volumes:
   qdrant_storage:
+    name: secure_rag_qdrant_storage

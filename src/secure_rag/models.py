@@ -98,3 +98,18 @@ class IndexReport:
     chunks: int = 0
     unsupported: int = 0
     details: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class IndexProgress:
+    """Aggregate, log-safe progress for a running index build."""
+
+    build_id: str
+    phase: str
+    discovered: int = 0
+    indexed: int = 0
+    skipped: int = 0
+    failed: int = 0
+    chunks: int = 0
+    elapsed_seconds: float = 0.0
+    files_per_second: float = 0.0

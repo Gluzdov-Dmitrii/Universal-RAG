@@ -5,9 +5,11 @@ from pathlib import Path
 import pytest
 import yaml
 
+import secure_rag.signatures as signatures_module
 from secure_rag.chunking import chunk_text
 from secure_rag.config import load_config
-from secure_rag.extractors import extract_document
+from secure_rag.extractors import extract_document, normalize_text
+from secure_rag.signatures import compute_index_signature
 
 
 def test_chunking_is_deterministic_and_overlaps() -> None:
@@ -28,16 +30,74 @@ def test_chunking_is_deterministic_and_overlaps() -> None:
     assert all(first[index + 1].start < first[index].end for index in range(len(first) - 1))
 
 
-def test_html_extractor_removes_script(tmp_path) -> None:
+def test_normalize_text_replaces_lone_surrogates_without_shifting_offsets() -> None:
+    source = "до\ud800после"
+
+    normalized = normalize_text(source)
+
+    assert normalized == "до\ufffdпосле"
+    assert len(normalized) == len(source)
+    normalized.encode("utf-8")
+
+
+def test_html_extractor_reads_valid_document(tmp_path) -> None:
     path = tmp_path / "sample.htm"
     path.write_text(
-        "<html><body><h1>Полезный текст</h1><script>secret_script()</script></body></html>",
+        "<html><body><h1>Полезный текст</h1><p>Второй абзац</p></body></html>",
         encoding="utf-8",
     )
     config = load_config().ingestion
     result = extract_document(path, config)
     assert "Полезный текст" in result.text
-    assert "secret_script" not in result.text
+    assert "Второй абзац" in result.text
+
+
+def test_html_extractor_recovers_malformed_document(tmp_path) -> None:
+    path = tmp_path / "malformed.html"
+    path.write_text(
+        "<html><body><h1>Заголовок<p>Первый <b>жирный<p>Второй",
+        encoding="utf-8",
+    )
+
+    result = extract_document(path, load_config().ingestion)
+
+    assert "Заголовок" in result.text
+    assert "Первый" in result.text
+    assert "жирный" in result.text
+    assert "Второй" in result.text
+
+
+def test_html_extractor_excludes_active_and_fallback_content(tmp_path) -> None:
+    path = tmp_path / "excluded.html"
+    path.write_text(
+        """<html><head><style>hidden_style</style></head><body>
+        До<script>hidden_script</script>после
+        <noscript>hidden_fallback</noscript>видимый хвост
+        </body></html>""",
+        encoding="utf-8",
+    )
+
+    result = extract_document(path, load_config().ingestion)
+
+    assert "До" in result.text
+    assert "после" in result.text
+    assert "видимый хвост" in result.text
+    assert "hidden_style" not in result.text
+    assert "hidden_script" not in result.text
+    assert "hidden_fallback" not in result.text
+
+
+def test_index_signature_changes_with_extractor_policy(monkeypatch) -> None:
+    config = load_config()
+    current = compute_index_signature(config, "test-embedding")
+
+    monkeypatch.setattr(
+        signatures_module,
+        "EXTRACTOR_VERSION",
+        "test-only-different-extractor-policy",
+    )
+
+    assert current != compute_index_signature(config, "test-embedding")
 
 
 def test_source_and_runtime_may_not_overlap(tmp_path) -> None:

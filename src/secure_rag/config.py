@@ -23,6 +23,7 @@ class IngestionConfig:
     pdf_max_pages: int
     max_file_mb: int
     max_extracted_chars: int
+    persist_extracted_text_cache: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +42,9 @@ class QdrantConfig:
     mode: str
     collection_name: str
     url: str | None
+    timeout_seconds: int
+    write_max_attempts: int
+    retry_backoff_seconds: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +137,28 @@ def _need(data: dict[str, Any], key: str) -> Any:
     return data[key]
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"Invalid boolean environment value: {name}")
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    return default if raw is None or not raw.strip() else int(raw)
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.getenv(name)
+    return default if raw is None or not raw.strip() else float(raw)
+
+
 def load_config(config_path: str | Path | None = None) -> AppConfig:
     default_repo = Path(__file__).resolve().parents[2]
     raw_path = config_path or os.getenv("SECURE_RAG_CONFIG", "config/pilot.yaml")
@@ -151,6 +177,7 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
     runtime_value = _need(paths, "runtime_root")
     ingestion = _need(raw, "ingestion")
     embedding = _need(raw, "embedding")
+    qdrant = _need(raw, "qdrant")
     retrieval = _need(raw, "retrieval")
     sanitization = _need(raw, "sanitization")
 
@@ -171,6 +198,10 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
             pdf_max_pages=int(_need(ingestion, "pdf_max_pages")),
             max_file_mb=int(_need(ingestion, "max_file_mb")),
             max_extracted_chars=int(_need(ingestion, "max_extracted_chars")),
+            persist_extracted_text_cache=_env_bool(
+                "SECURE_RAG_PERSIST_EXTRACTED_CACHE",
+                bool(ingestion.get("persist_extracted_text_cache", False)),
+            ),
         ),
         embedding=EmbeddingConfig(
             model_id=str(_need(embedding, "model_id")),
@@ -182,12 +213,27 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
             passage_prefix=str(embedding.get("passage_prefix", "")),
         ),
         qdrant=QdrantConfig(
-            mode=str(_need(_need(raw, "qdrant"), "mode")),
-            collection_name=str(_need(_need(raw, "qdrant"), "collection_name")),
+            mode=str(
+                os.getenv("SECURE_RAG_QDRANT_MODE")
+                or _need(qdrant, "mode")
+            ),
+            collection_name=str(_need(qdrant, "collection_name")),
             url=(
                 os.getenv("SECURE_RAG_QDRANT_URL")
-                or _need(raw, "qdrant").get("url")
+                or qdrant.get("url")
                 or None
+            ),
+            timeout_seconds=_env_int(
+                "SECURE_RAG_QDRANT_TIMEOUT_SECONDS",
+                int(qdrant.get("timeout_seconds", 60)),
+            ),
+            write_max_attempts=_env_int(
+                "SECURE_RAG_QDRANT_WRITE_MAX_ATTEMPTS",
+                int(qdrant.get("write_max_attempts", 3)),
+            ),
+            retry_backoff_seconds=_env_float(
+                "SECURE_RAG_QDRANT_RETRY_BACKOFF_SECONDS",
+                float(qdrant.get("retry_backoff_seconds", 0.25)),
             ),
         ),
         retrieval=RetrievalConfig(
@@ -231,6 +277,12 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         raise ValueError("qdrant.mode must be embedded or server")
     if config.qdrant.mode == "server" and not config.qdrant.url:
         raise ValueError("qdrant.url is required in server mode")
+    if config.qdrant.timeout_seconds <= 0:
+        raise ValueError("qdrant.timeout_seconds must be positive")
+    if not 1 <= config.qdrant.write_max_attempts <= 10:
+        raise ValueError("qdrant.write_max_attempts must be between 1 and 10")
+    if config.qdrant.retry_backoff_seconds < 0:
+        raise ValueError("qdrant.retry_backoff_seconds must not be negative")
     source = config.paths.source_root
     runtime = config.paths.runtime_root
     if source == runtime or source.is_relative_to(runtime) or runtime.is_relative_to(source):
