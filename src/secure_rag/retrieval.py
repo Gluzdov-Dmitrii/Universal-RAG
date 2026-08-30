@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from .config import AppConfig
-from .embeddings import Embedder
+from .embeddings import Embedder, normalize_retrieval_query
 from .events import EventCallback, timed_stage
 from .extracted_cache import ExtractedTextCache, ExtractedTextCacheBackend
 from .extractors import ExtractionError, extract_document, file_sha256
@@ -39,6 +39,9 @@ class Retriever:
     ) -> list[RetrievalHit]:
         if not query.strip():
             return []
+        normalized_query = normalize_retrieval_query(query)
+        if not normalized_query:
+            return []
         requested_top_k = top_k or self.config.retrieval.top_k
         expected_signature = compute_index_signature(
             self.config, self.embedder.model_version
@@ -47,9 +50,12 @@ class Retriever:
             on_event,
             "retrieval.query_embedding",
             "Токенизация и embedding запроса",
-            {"embedding_dimension": self.embedder.dimension},
+            {
+                "embedding_dimension": self.embedder.dimension,
+                "query_normalized": normalized_query != query,
+            },
         ):
-            vector = self.embedder.embed_query(query)
+            vector = self.embedder.embed_query(normalized_query)
         with timed_stage(
             on_event,
             "retrieval.ann",

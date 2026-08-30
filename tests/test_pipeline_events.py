@@ -29,6 +29,22 @@ class EmptyRetriever:
         return []
 
 
+class RecordingRetriever(EmptyRetriever):
+    def __init__(self) -> None:
+        super().__init__()
+        self.queries: list[str] = []
+
+    def search(
+        self,
+        query: str,
+        top_k: int | None = None,
+        *,
+        on_event=None,
+    ) -> list:
+        self.queries.append(query)
+        return []
+
+
 class FakeManifest:
     def latest_build_id(self) -> str:
         return "build-test"
@@ -144,3 +160,19 @@ def test_jsonl_event_log_drops_non_allowlisted_details(tmp_path) -> None:
     assert record["details"] == {"detected_spans": 2}
     assert "private@example.org" not in raw
     assert "document.docx" not in raw
+
+
+def test_pipeline_retrieves_raw_question_before_sanitization(tmp_path) -> None:
+    config = _config(tmp_path)
+    config.ensure_runtime()
+    retriever = RecordingRetriever()
+    question = "Что известно про private@example.org?"
+
+    SecureRagPipeline(
+        config,
+        retriever,
+        PrivacyGateway(EnsembleDetector([RegexDetector()])),
+        FakeManifest(),
+    ).run(question, provider="stub")
+
+    assert retriever.queries == [question]

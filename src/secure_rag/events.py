@@ -59,6 +59,7 @@ _PERSISTED_DETAIL_KEYS = {
     "output_chars",
     "provider",
     "qdrant_mode",
+    "query_normalized",
     "question_chars",
     "selected",
     "size_bytes",

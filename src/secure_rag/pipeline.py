@@ -5,6 +5,7 @@ from pathlib import Path
 from .attachments import attachment_hits, resolve_attachment_path
 from .bridge import BridgeManager
 from .config import AppConfig
+from .embeddings import QUERY_NORMALIZATION_VERSION
 from .events import EventCallback, PipelineEvent, emit_event, timed_stage
 from .manifest import ManifestStore
 from .models import BridgeResult, MarkerState, RetrievalHit
@@ -140,6 +141,7 @@ class SecureRagPipeline:
             "index_build_ids": ",".join(sorted({hit.build_id for hit in hits if hit.build_id}))
             or self.manifest.latest_build_id(),
             "embedding": self.retriever.embedder.model_version,
+            "query_normalization": QUERY_NORMALIZATION_VERSION,
             "qdrant_collection": self.config.qdrant.collection_name,
             "sanitizer": getattr(self.gateway.detector, "name", "unknown"),
         }

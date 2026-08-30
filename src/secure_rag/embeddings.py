@@ -11,6 +11,16 @@ import numpy as np
 from .config import EmbeddingConfig
 from .hf_policy import hf_local_files_only
 
+QUERY_NORMALIZATION_VERSION = "terminal-punctuation-v1"
+_TERMINAL_QUERY_PUNCTUATION = ".,!?;:…。！？"
+
+
+def normalize_retrieval_query(text: str) -> str:
+    """Remove formatting noise that should not move a semantic query in vector space."""
+
+    normalized = " ".join(text.split())
+    return normalized.rstrip(_TERMINAL_QUERY_PUNCTUATION).rstrip()
+
 
 class Embedder(Protocol):
     @property
@@ -78,7 +88,8 @@ class SentenceTransformerEmbedder:
         return self._encode([f"{self._config.passage_prefix}{text}" for text in texts])
 
     def embed_query(self, text: str) -> np.ndarray:
-        return self._encode([f"{self._config.query_prefix}{text}"])[0]
+        normalized = normalize_retrieval_query(text)
+        return self._encode([f"{self._config.query_prefix}{normalized}"])[0]
 
 
 class HashingEmbedder:
@@ -113,4 +124,4 @@ class HashingEmbedder:
         return np.stack([self._one(text) for text in texts])
 
     def embed_query(self, text: str) -> np.ndarray:
-        return self._one(text)
+        return self._one(normalize_retrieval_query(text))
