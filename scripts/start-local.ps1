@@ -23,6 +23,23 @@ $logDirectory = Join-Path $runtimeRoot "logs"
 $pidFile = Join-Path $pidDirectory "streamlit.json"
 $appHealthUrl = "http://127.0.0.1:8501/_stcore/health"
 $qdrantHealthUrl = "http://127.0.0.1:6333/readyz"
+$localEnvironmentPath = Join-Path $repoRoot ".env"
+
+# Load simple NAME=VALUE settings without evaluating them as PowerShell. The file is ignored by
+# Git and is the right place for machine-specific provider mode, task ID, and future credentials.
+if (Test-Path -LiteralPath $localEnvironmentPath -PathType Leaf) {
+    foreach ($rawLine in Get-Content -LiteralPath $localEnvironmentPath) {
+        $line = $rawLine.Trim()
+        if (-not $line -or $line.StartsWith("#")) {
+            continue
+        }
+        $parts = $line.Split("=", 2)
+        if ($parts.Count -ne 2 -or $parts[0] -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
+            throw "Invalid .env line. Expected NAME=VALUE without shell expressions."
+        }
+        Set-Item -LiteralPath "Env:$($parts[0])" -Value $parts[1]
+    }
+}
 
 function Test-HttpHealth {
     param([Parameter(Mandatory)][string]$Url)

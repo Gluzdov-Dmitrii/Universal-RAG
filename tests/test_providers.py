@@ -116,3 +116,58 @@ def test_codex_local_workspace_root_stays_outside_private_roots(monkeypatch, tmp
 
     assert provider.sandbox_root.is_relative_to(local_app_data)
     assert not provider.sandbox_root.is_relative_to(repo_root)
+
+
+def test_codex_local_persists_separate_thread_when_configured(
+    monkeypatch, tmp_path
+) -> None:
+    import sys
+
+    calls: list[tuple[str, object]] = []
+
+    class FakeThread:
+        @staticmethod
+        def set_name(name):
+            calls.append(("name", name))
+
+        @staticmethod
+        def run(payload):
+            calls.append(("run", payload))
+            return SimpleNamespace(final_response="Ответ с [[PER_0001]]")
+
+    class FakeCodex:
+        def __init__(self, config):
+            calls.append(("config", config))
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def thread_start(self, **kwargs):
+            calls.append(("start", kwargs))
+            return FakeThread()
+
+    fake_module = SimpleNamespace(
+        ApprovalMode=SimpleNamespace(deny_all="deny_all"),
+        Codex=FakeCodex,
+        CodexConfig=lambda **kwargs: kwargs,
+        Sandbox=SimpleNamespace(read_only="read_only"),
+    )
+    monkeypatch.setitem(sys.modules, "openai_codex", fake_module)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setenv("SECURE_RAG_ALLOW_UNSAFE_CODEX_LOCAL", "1")
+    monkeypatch.setenv("SECURE_RAG_CODEX_PERSIST_THREADS", "1")
+
+    answer = LocalCodexProvider().answer_payload(
+        "Запрос с [[PER_0001]]", "00000000-0000-4000-8000-000000000002"
+    )
+
+    assert answer == "Ответ с [[PER_0001]]\n"
+    options = next(value for name, value in calls if name == "start")
+    assert options["ephemeral"] is False
+    assert options["sandbox"] == "read_only"
+    assert options["approval_mode"] == "deny_all"
+    assert ("name", "Secure RAG 00000000") in calls
+    assert calls[-1] == ("run", "Запрос с [[PER_0001]]")

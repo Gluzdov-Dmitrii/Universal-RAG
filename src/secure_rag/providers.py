@@ -152,6 +152,11 @@ class LocalCodexProvider:
         if not self.model:
             raise ValueError("codex_local_model_missing")
 
+        persist_value = os.getenv("SECURE_RAG_CODEX_PERSIST_THREADS", "0").strip().lower()
+        if persist_value not in {"0", "1", "false", "true", "no", "yes"}:
+            raise ValueError("codex_local_persist_threads_invalid")
+        self.persist_threads = persist_value in {"1", "true", "yes"}
+
     def answer_payload(self, payload: str, request_id: str) -> str:
         if not payload.strip():
             raise ValueError("sanitized_provider_payload_empty")
@@ -171,14 +176,21 @@ class LocalCodexProvider:
                 "Do not use tools, shell commands, network access, or read files."
             )
             with Codex(CodexConfig(cwd=str(workspace))) as codex:
+                thread_options = {
+                    "cwd": str(workspace),
+                    "model": self.model,
+                    "sandbox": Sandbox.read_only,
+                    "approval_mode": ApprovalMode.deny_all,
+                    "developer_instructions": instructions,
+                }
                 thread = codex.thread_start(
-                    cwd=str(workspace),
-                    model=self.model,
-                    sandbox=Sandbox.read_only,
-                    approval_mode=ApprovalMode.deny_all,
-                    ephemeral=True,
-                    developer_instructions=instructions,
+                    ephemeral=not self.persist_threads,
+                    **thread_options,
                 )
+                if self.persist_threads:
+                    # One thread per request prevents unrelated marker namespaces and context
+                    # from mixing while leaving an auditable task in the Codex sidebar.
+                    thread.set_name(f"Secure RAG {request_id[:8]}")
                 result = thread.run(payload)
         except Exception:
             # The local SDK can include payloads and paths in its errors.
