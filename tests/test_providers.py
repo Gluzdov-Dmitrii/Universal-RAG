@@ -126,8 +126,6 @@ def test_codex_local_persists_separate_thread_when_configured(
     calls: list[tuple[str, object]] = []
 
     class FakeThread:
-        id = "persistent-thread-id"
-
         @staticmethod
         def set_name(name):
             calls.append(("name", name))
@@ -151,13 +149,6 @@ def test_codex_local_persists_separate_thread_when_configured(
             calls.append(("start", kwargs))
             return FakeThread()
 
-        def thread_list(self, **kwargs):
-            calls.append(("list", kwargs))
-            return SimpleNamespace(data=[SimpleNamespace(id=FakeThread.id)])
-
-        def thread_unarchive(self, thread_id):
-            calls.append(("unarchive", thread_id))
-
     fake_module = SimpleNamespace(
         ApprovalMode=SimpleNamespace(deny_all="deny_all"),
         Codex=FakeCodex,
@@ -179,12 +170,4 @@ def test_codex_local_persists_separate_thread_when_configured(
     assert options["sandbox"] == "read_only"
     assert options["approval_mode"] == "deny_all"
     assert ("name", "Secure RAG 00000000") in calls
-    assert (
-        "list",
-        {
-            "archived": True,
-            "limit": 20,
-            "search_term": "Secure RAG 00000000",
-        },
-    ) in calls
-    assert calls[-1] == ("unarchive", FakeThread.id)
+    assert calls[-1] == ("run", "Запрос с [[PER_0001]]")
