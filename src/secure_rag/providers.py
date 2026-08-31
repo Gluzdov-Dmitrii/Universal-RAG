@@ -192,6 +192,18 @@ class LocalCodexProvider:
                     # from mixing while leaving an auditable task in the Codex sidebar.
                     thread.set_name(f"Secure RAG {request_id[:8]}")
                 result = thread.run(payload)
+                if self.persist_threads:
+                    try:
+                        archived = codex.thread_list(
+                            archived=True,
+                            limit=20,
+                            search_term=f"Secure RAG {request_id[:8]}",
+                        )
+                        if any(item.id == thread.id for item in archived.data):
+                            codex.thread_unarchive(thread.id)
+                    except Exception:
+                        # Sidebar visibility is secondary to returning the completed answer.
+                        pass
         except Exception:
             # The local SDK can include payloads and paths in its errors.
             raise RuntimeError("codex_local_provider_failed") from None
