@@ -3,8 +3,8 @@ from __future__ import annotations
 import pytest
 
 from secure_rag.models import EntitySpan, MarkerState
-from secure_rag.sanitization.core import PrivacyGateway
-from secure_rag.sanitization.ner import EnsembleDetector
+from secure_rag.sanitization.core import PrivacyGateway, merge_spans
+from secure_rag.sanitization.ner import EnsembleDetector, TransformersNerDetector
 from secure_rag.sanitization.regex import RegexDetector
 
 
@@ -67,3 +67,30 @@ def test_original_marker_is_not_treated_as_vault_marker() -> None:
     sanitized = gateway.sanitize_field("text", raw, state).text
     assert sanitized != raw
     assert gateway.restore(sanitized, state) == raw
+
+
+def test_transformer_policy_filters_disallowed_low_score_and_short_spans() -> None:
+    detector = object.__new__(TransformersNerDetector)
+    detector.name = "synthetic"
+    detector.threshold = 0.85
+    detector.priority = 100
+    detector.allowed_labels = {"PER", "ORG"}
+    detector.min_chars = 3
+    detector._character_windows = lambda text: [(0, len(text))]
+    detector._pipeline = lambda _text: [
+        {"entity_group": "POSITION", "score": 0.99, "start": 0, "end": 7},
+        {"entity_group": "ORG", "score": 0.99, "start": 8, "end": 10},
+        {"entity_group": "ORG", "score": 0.84, "start": 11, "end": 24},
+        {"entity_group": "PER", "score": 0.93, "start": 11, "end": 24},
+    ]
+
+    spans = detector.detect("инженер AC Анна Смирнова")
+
+    assert [(span.label, span.start, span.end) for span in spans] == [("PER", 11, 24)]
+
+
+def test_higher_priority_precise_collection3_boundary_wins_overlap() -> None:
+    broad_legal = EntitySpan(0, 15, "ORG", 0.91, "legal", priority=100)
+    precise_collection3 = EntitySpan(8, 15, "ORG", 0.99, "collection3", priority=200)
+
+    assert merge_spans([broad_legal, precise_collection3]) == [precise_collection3]

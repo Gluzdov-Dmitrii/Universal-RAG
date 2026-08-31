@@ -22,8 +22,11 @@ class RecordingEmbedder:
 
 
 class EmptyVectorStore:
-    @staticmethod
-    def search(*_args, **_kwargs) -> list:
+    def __init__(self) -> None:
+        self.search_kwargs: dict[str, object] = {}
+
+    def search(self, *_args, **kwargs) -> list:
+        self.search_kwargs = kwargs
         return []
 
 
@@ -44,17 +47,20 @@ def test_retrieval_normalizes_terminal_punctuation_before_embedding(tmp_path) ->
         ),
     )
     embedder = RecordingEmbedder()
+    vector_store = EmptyVectorStore()
     events: list[PipelineEvent] = []
 
     hits = Retriever(
         config,
         embedder,
         EmptyManifest(),
-        EmptyVectorStore(),
+        vector_store,
     ).search("  тестовый   запрос?  ", on_event=events.append)
 
     assert hits == []
     assert embedder.queries == ["тестовый запрос"]
+    assert vector_store.search_kwargs["hnsw_ef"] == 512
+    assert vector_store.search_kwargs["exact_search"] is False
     completed = next(
         event
         for event in events

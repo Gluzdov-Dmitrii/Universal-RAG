@@ -236,6 +236,8 @@ class QdrantStore:
         embedding_version: str,
         index_signature: str,
         score_threshold: float | None = None,
+        hnsw_ef: int | None = None,
+        exact_search: bool = False,
     ) -> list[models.ScoredPoint]:
         query_filter = models.Filter(
             must=[
@@ -255,6 +257,11 @@ class QdrantStore:
                 ),
             ]
         )
+        search_params = (
+            models.SearchParams(hnsw_ef=hnsw_ef, exact=exact_search)
+            if self.server_mode
+            else None
+        )
         result = self.client.query_points(
             collection_name=self.collection_name,
             query=vector.tolist(),
@@ -263,6 +270,7 @@ class QdrantStore:
             score_threshold=score_threshold,
             with_payload=True,
             with_vectors=False,
+            search_params=search_params,
         )
         return list(result.points)
 

@@ -43,9 +43,11 @@ qdrant:
   retry_backoff_seconds: 0.25
 
 retrieval:
-  top_k: 5
+  top_k: 12
   access_group: "pilot"
   score_threshold: null
+  hnsw_ef: 512
+  exact_search: false
 
 sanitization:
   marker_pattern_version: 1
@@ -57,17 +59,34 @@ sanitization:
       revision: "c0313a42ac147ccc38f5c3b0b3e77cab53208683"
       local_path: "runtime/model-cache/ner/legal-c0313a42"
       enabled: true
-      threshold: 0.60
+      threshold: 0.85
       device: "auto"
-      priority: 200
+      priority: 100
+      min_chars: 3
+      allowed_labels:
+        - "PER"
+        - "ORG"
+        - "ADDRESS"
+        - "EMAIL"
+        - "PHONE"
+        - "INN"
+        - "SNILS"
+        - "PASSPORT"
+        - "BANK_ACCOUNT"
+        - "OGRN"
     - name: "collection3"
       model_id: "viktor-shcherb/sberbank-rubert-base-collection3"
       revision: "65ccbf8d2d25229c3858631bb24bb794c0c6907c"
       local_path: null
       enabled: true
-      threshold: 0.70
+      threshold: 0.90
       device: "auto"
-      priority: 100
+      priority: 200
+      min_chars: 3
+      allowed_labels:
+        - "PER"
+        - "ORG"
+        - "LOC"
     - name: "gliner"
       model_id: ""
       revision: ""

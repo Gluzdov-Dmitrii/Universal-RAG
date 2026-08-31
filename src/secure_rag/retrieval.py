@@ -60,7 +60,11 @@ class Retriever:
             on_event,
             "retrieval.ann",
             "ANN-поиск в Qdrant",
-            {"top_k": requested_top_k},
+            {
+                "top_k": requested_top_k,
+                "hnsw_ef": self.config.retrieval.hnsw_ef,
+                "exact_search": self.config.retrieval.exact_search,
+            },
         ) as details:
             points = self.vector_store.search(
                 vector,
@@ -69,6 +73,8 @@ class Retriever:
                 embedding_version=self.embedder.model_version,
                 index_signature=expected_signature,
                 score_threshold=self.config.retrieval.score_threshold,
+                hnsw_ef=self.config.retrieval.hnsw_ef,
+                exact_search=self.config.retrieval.exact_search,
             )
             details["candidates"] = len(points)
         text_cache: dict[str, str] = {}

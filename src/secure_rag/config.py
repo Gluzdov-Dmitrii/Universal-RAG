@@ -52,6 +52,8 @@ class RetrievalConfig:
     top_k: int
     access_group: str
     score_threshold: float | None
+    hnsw_ef: int | None = None
+    exact_search: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +66,8 @@ class NerModelConfig:
     threshold: float
     device: str
     priority: int
+    allowed_labels: tuple[str, ...] = ()
+    min_chars: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -237,12 +241,21 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
             ),
         ),
         retrieval=RetrievalConfig(
-            top_k=int(_need(retrieval, "top_k")),
+            top_k=_env_int("SECURE_RAG_RETRIEVAL_TOP_K", int(_need(retrieval, "top_k"))),
             access_group=str(_need(retrieval, "access_group")),
             score_threshold=(
                 None
                 if retrieval.get("score_threshold") is None
                 else float(retrieval["score_threshold"])
+            ),
+            hnsw_ef=(
+                None
+                if retrieval.get("hnsw_ef") is None
+                else _env_int("SECURE_RAG_RETRIEVAL_HNSW_EF", int(retrieval["hnsw_ef"]))
+            ),
+            exact_search=_env_bool(
+                "SECURE_RAG_RETRIEVAL_EXACT",
+                bool(retrieval.get("exact_search", False)),
             ),
         ),
         sanitization=SanitizationConfig(
@@ -263,6 +276,11 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
                     threshold=float(item.get("threshold", 0.5)),
                     device=str(item.get("device", "auto")),
                     priority=int(item.get("priority", 0)),
+                    allowed_labels=tuple(
+                        str(label).upper().strip()
+                        for label in item.get("allowed_labels", [])
+                    ),
+                    min_chars=int(item.get("min_chars", 1)),
                 )
                 for item in sanitization.get("models", [])
             ),
@@ -283,6 +301,15 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         raise ValueError("qdrant.write_max_attempts must be between 1 and 10")
     if config.qdrant.retry_backoff_seconds < 0:
         raise ValueError("qdrant.retry_backoff_seconds must not be negative")
+    if not 1 <= config.retrieval.top_k <= 100:
+        raise ValueError("retrieval.top_k must be between 1 and 100")
+    if config.retrieval.hnsw_ef is not None and config.retrieval.hnsw_ef < 1:
+        raise ValueError("retrieval.hnsw_ef must be positive")
+    for model in config.sanitization.models:
+        if not 0.0 <= model.threshold <= 1.0:
+            raise ValueError(f"NER threshold must be between 0 and 1: {model.name}")
+        if model.min_chars < 1:
+            raise ValueError(f"NER min_chars must be positive: {model.name}")
     source = config.paths.source_root
     runtime = config.paths.runtime_root
     if source == runtime or source.is_relative_to(runtime) or runtime.is_relative_to(source):

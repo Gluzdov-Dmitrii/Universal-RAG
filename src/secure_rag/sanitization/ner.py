@@ -57,6 +57,10 @@ class TransformersNerDetector:
         self.name = config.name
         self.threshold = config.threshold
         self.priority = config.priority
+        self.allowed_labels = {
+            normalize_label(label) for label in config.allowed_labels if label.strip()
+        }
+        self.min_chars = config.min_chars
         model_source = (
             str(config.local_path)
             if config.local_path is not None and config.local_path.is_dir()
@@ -128,6 +132,11 @@ class TransformersNerDetector:
                         or "ENTITY"
                     )
                 )
+                if self.allowed_labels and label not in self.allowed_labels:
+                    continue
+                value = text[start:end]
+                if sum(character.isalnum() for character in value) < self.min_chars:
+                    continue
                 span = EntitySpan(
                     start=start,
                     end=end,
