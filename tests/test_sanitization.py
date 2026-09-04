@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from secure_rag.models import EntitySpan, MarkerState
+from secure_rag.domain.models import EntitySpan, MarkerState
 from secure_rag.sanitization.core import PrivacyGateway, merge_spans
 from secure_rag.sanitization.ner import EnsembleDetector, TransformersNerDetector
+from secure_rag.sanitization.normalization import canonical_person_value
 from secure_rag.sanitization.regex import RegexDetector
 
 
@@ -53,7 +54,9 @@ def test_marker_roundtrip_and_unknown_marker_block() -> None:
     sanitized = gateway.sanitize_field("question", raw, state).text
     assert "Анна Смирнова" not in sanitized
     assert "test@example.org" not in sanitized
-    assert gateway.restore(sanitized, state) == raw
+    assert gateway.restore(sanitized, state) == (
+        "Анна Смирнова пишет Анна Смирнова на test@example.org."
+    )
     with pytest.raises(ValueError, match="unknown"):
         gateway.restore(sanitized + " [[PER_9999]]", state)
     with pytest.raises(ValueError, match="unknown"):
@@ -67,6 +70,50 @@ def test_original_marker_is_not_treated_as_vault_marker() -> None:
     sanitized = gateway.sanitize_field("text", raw, state).text
     assert sanitized != raw
     assert gateway.restore(sanitized, state) == raw
+
+
+def test_person_forms_share_one_surname_marker() -> None:
+    raw = "Ерофеева. Ерофеев Максим Владимирович. Ерофеев М.В."
+    detector = LiteralDetector(
+        {
+            "Ерофеева": "PER",
+            "Ерофеев Максим Владимирович": "PER",
+            "Ерофеев М.В.": "PER",
+        }
+    )
+    gateway = PrivacyGateway(detector)
+    state = MarkerState()
+
+    sanitized = gateway.sanitize_field("question", raw, state).text
+
+    assert sanitized == "[[PER_0001]]. [[PER_0001]]. [[PER_0001]]"
+    assert state.marker_to_value == {"[[PER_0001]]": "Ерофеев"}
+    assert canonical_person_value("Ерофееву") == "Ерофеев"
+    assert gateway.restore(sanitized, state) == "Ерофеев. Ерофеев. Ерофеев"
+
+
+def test_outbound_validation_does_not_match_short_value_inside_word() -> None:
+    gateway = PrivacyGateway(RegexDetector())
+    state = MarkerState()
+    gateway.mark_literal("НТИ", "ORG", state)
+
+    gateway.validate_outbound("PER-маркеры идентифицируют человека.", state)
+
+    with pytest.raises(ValueError, match="known unmarked value"):
+        gateway.validate_outbound("Организация НТИ указана без маркера.", state)
+
+
+def test_known_value_propagation_respects_word_boundaries() -> None:
+    gateway = PrivacyGateway(RegexDetector())
+    text = "идентифицируют НТИ2 и НТИ"
+
+    spans = gateway.propagate_known(
+        text,
+        [("ORG", "НТИ", 100)],
+    )
+
+    start = text.rindex("НТИ")
+    assert [(span.start, span.end) for span in spans] == [(start, start + 3)]
 
 
 def test_transformer_policy_filters_disallowed_low_score_and_short_spans() -> None:

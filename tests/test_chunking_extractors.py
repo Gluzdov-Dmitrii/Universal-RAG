@@ -5,11 +5,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-import secure_rag.signatures as signatures_module
-from secure_rag.chunking import chunk_text
+import secure_rag.ingestion.signatures as signatures_module
 from secure_rag.config import load_config
-from secure_rag.extractors import extract_document, normalize_text
-from secure_rag.signatures import compute_index_signature
+from secure_rag.domain.models import TextLocation
+from secure_rag.ingestion.chunking import chunk_text
+from secure_rag.ingestion.extractors import extract_document, iter_source_files, normalize_text
+from secure_rag.ingestion.signatures import compute_index_signature
 
 
 def test_chunking_is_deterministic_and_overlaps() -> None:
@@ -28,6 +29,29 @@ def test_chunking_is_deterministic_and_overlaps() -> None:
     assert len(first) > 1
     assert all(chunk.text == text[chunk.start : chunk.end] for chunk in first)
     assert all(first[index + 1].start < first[index].end for index in range(len(first) - 1))
+
+
+def test_chunking_maps_character_ranges_to_page_range() -> None:
+    text = "[PAGE 1]\nпервая страница\n\n[PAGE 2]\nвторая страница"
+    page_two_start = text.index("[PAGE 2]")
+
+    chunks = chunk_text(
+        text=text,
+        document_id="doc",
+        revision="rev",
+        chunk_chars=len(text),
+        overlap_chars=0,
+        min_chunk_chars=1,
+        text_locations=(
+            TextLocation(0, page_two_start, "page", "1"),
+            TextLocation(page_two_start, len(text), "page", "2"),
+        ),
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0].location_kind == "page"
+    assert chunks[0].location_start == "1"
+    assert chunks[0].location_end == "2"
 
 
 def test_normalize_text_replaces_lone_surrogates_without_shifting_offsets() -> None:
@@ -65,6 +89,18 @@ def test_html_extractor_recovers_malformed_document(tmp_path) -> None:
     assert "Первый" in result.text
     assert "жирный" in result.text
     assert "Второй" in result.text
+
+
+def test_source_scan_excludes_generated_webhelp_indexes(tmp_path) -> None:
+    generated = tmp_path / "docs" / "whgdata" / "whlstf163.htm"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("generated search index", encoding="utf-8")
+    document = tmp_path / "docs" / "manual.htm"
+    document.write_text("useful document", encoding="utf-8")
+
+    discovered = list(iter_source_files(tmp_path, (".htm",)))
+
+    assert discovered == [document.resolve()]
 
 
 def test_html_extractor_excludes_active_and_fallback_content(tmp_path) -> None:

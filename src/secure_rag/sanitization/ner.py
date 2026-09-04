@@ -4,8 +4,8 @@ from pathlib import Path
 from typing import Protocol
 
 from ..config import NerModelConfig
-from ..hf_policy import hf_local_files_only
-from ..models import EntitySpan
+from ..domain.models import EntitySpan
+from ..infrastructure.huggingface import hf_local_files_only
 
 
 class SpanDetector(Protocol):

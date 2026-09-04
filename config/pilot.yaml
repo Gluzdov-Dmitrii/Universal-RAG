@@ -48,6 +48,19 @@ retrieval:
   score_threshold: null
   hnsw_ef: 512
   exact_search: false
+  iterative_enabled: true
+  max_iterations: 3
+  max_queries_per_iteration: 3
+  max_contexts: 24
+  rewrite_min_similarity: 0.55
+  adjacent_chunk_radius: 1
+
+llm:
+  agent_workspace_root: "C:/Dev/LLM/Codex_RAG_Test"
+  instruction_files:
+    - ".cursor/rules/rag-assistant.mdc"
+    - ".cursor/skills/answering-with-secure-rag/SKILL.md"
+  max_instruction_chars: 20000
 
 sanitization:
   marker_pattern_version: 1
@@ -57,7 +70,7 @@ sanitization:
     - name: "legal"
       model_id: "LLAIMlegal/ru-legal-ner"
       revision: "c0313a42ac147ccc38f5c3b0b3e77cab53208683"
-      local_path: "runtime/model-cache/ner/legal-c0313a42"
+      local_path: "runtime/cache/models/ner/legal-c0313a42"
       enabled: true
       threshold: 0.85
       device: "auto"

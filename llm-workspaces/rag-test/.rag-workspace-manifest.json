@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "component": "secure-rag-user-agent",
+  "managed_files": [
+    ".rag-workspace-manifest.json",
+    "AGENTS.md",
+    "README.md",
+    ".cursor/agents/rag-answerer.md",
+    ".cursor/rules/rag-assistant.mdc",
+    ".cursor/skills/answering-with-secure-rag/SKILL.md"
+  ]
+}

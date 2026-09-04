@@ -6,8 +6,8 @@ from types import ModuleType
 import pytest
 
 from secure_rag.config import EmbeddingConfig, NerModelConfig
-from secure_rag.embeddings import SentenceTransformerEmbedder
-from secure_rag.hf_policy import HF_LOCAL_ONLY_ENV, hf_local_files_only
+from secure_rag.infrastructure.huggingface import HF_LOCAL_ONLY_ENV, hf_local_files_only
+from secure_rag.retrieval.embeddings import SentenceTransformerEmbedder
 from secure_rag.sanitization.ner import TransformersNerDetector
 
 

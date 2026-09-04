@@ -5,22 +5,23 @@ from dataclasses import replace
 
 from docx import Document
 
-import secure_rag.indexer as indexer_module
-import secure_rag.retrieval as retrieval_module
+import secure_rag.ingestion.indexer as indexer_module
+import secure_rag.retrieval.service as retrieval_module
 from secure_rag.config import AppConfig, load_config
-from secure_rag.embeddings import HashingEmbedder
-from secure_rag.events import PipelineEvent
-from secure_rag.extracted_cache import (
+from secure_rag.domain.models import TextLocation
+from secure_rag.ingestion.cache import (
     ExtractedTextCache,
     ProcessMemoryExtractedTextCache,
 )
-from secure_rag.extractors import ExtractedDocument
-from secure_rag.extractors import extract_document as canonical_extract
-from secure_rag.extractors import file_sha256 as canonical_file_sha256
-from secure_rag.indexer import Indexer
-from secure_rag.manifest import ManifestStore
-from secure_rag.retrieval import Retriever
-from secure_rag.vector_store import QdrantStore
+from secure_rag.ingestion.extractors import ExtractedDocument
+from secure_rag.ingestion.extractors import extract_document as canonical_extract
+from secure_rag.ingestion.extractors import file_sha256 as canonical_file_sha256
+from secure_rag.ingestion.indexer import Indexer
+from secure_rag.ingestion.manifest import ManifestStore
+from secure_rag.orchestration.events import PipelineEvent
+from secure_rag.retrieval.embeddings import HashingEmbedder
+from secure_rag.retrieval.service import Retriever
+from secure_rag.retrieval.vector_store import QdrantStore
 
 
 def _test_config(tmp_path, *, persist_cache: bool = True) -> AppConfig:
@@ -104,7 +105,7 @@ def test_streamlit_style_ram_cache_avoids_extraction_without_disk_cache(
         max_total_chars=20_000,
         max_entry_chars=10_000,
     )
-    persistent_root = config.paths.runtime_root / "extracted-text-cache"
+    persistent_root = config.extracted_text_cache_path
     with (
         ManifestStore(config.manifest_path) as manifest,
         QdrantStore(config.qdrant_path, "memory_cache_test", embedder.dimension) as store,
@@ -162,10 +163,15 @@ def test_streamlit_style_ram_cache_avoids_extraction_without_disk_cache(
 
 def test_cache_policy_and_corruption_invalidate_entry(tmp_path) -> None:
     config = _test_config(tmp_path)
-    cache = ExtractedTextCache(config.paths.runtime_root / "extracted-text-cache")
+    cache = ExtractedTextCache(config.extracted_text_cache_path)
     document_id = "a" * 32
     revision = "b" * 64
-    extracted = ExtractedDocument("Нормализованный текст", page_count=2, truncated=False)
+    extracted = ExtractedDocument(
+        "Нормализованный текст",
+        page_count=2,
+        truncated=False,
+        locations=(TextLocation(0, 21, "page", "1"),),
+    )
 
     path = cache.store(document_id, revision, ".pdf", config.ingestion, extracted)
     assert cache.load(document_id, revision, ".pdf", config.ingestion) == extracted
@@ -194,7 +200,7 @@ def test_retrieval_uses_cache_and_rejects_source_tamper(tmp_path, monkeypatch) -
     source_document.save(source_file)
 
     embedder = HashingEmbedder(64)
-    cache = ExtractedTextCache(config.paths.runtime_root / "extracted-text-cache")
+    cache = ExtractedTextCache(config.extracted_text_cache_path)
     with (
         ManifestStore(config.manifest_path) as manifest,
         QdrantStore(config.qdrant_path, "cache_test", embedder.dimension) as store,

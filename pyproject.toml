@@ -32,7 +32,7 @@ web = ["streamlit>=1.49,<2"]
 dev = ["pytest>=8.3,<10", "ruff>=0.12,<1"]
 
 [project.scripts]
-secure-rag = "secure_rag.cli:main"
+secure-rag = "secure_rag.api.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/secure_rag"]
@@ -40,6 +40,11 @@ packages = ["src/secure_rag"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.pyright]
+pythonVersion = "3.12"
+venvPath = "."
+venv = ".venv"
 
 [tool.ruff]
 line-length = 100

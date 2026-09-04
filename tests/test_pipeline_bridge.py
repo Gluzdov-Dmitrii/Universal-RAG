@@ -6,9 +6,10 @@ from dataclasses import replace
 import pytest
 
 from secure_rag.config import load_config
-from secure_rag.models import EntitySpan, RetrievalHit
-from secure_rag.pipeline import SecureRagPipeline
-from secure_rag.providers import OpenAIResponsesProvider
+from secure_rag.domain.models import EntitySpan, MarkerState, RetrievalHit
+from secure_rag.llm.adapters import OpenAIResponsesProvider
+from secure_rag.llm.bridge import BridgeManager
+from secure_rag.orchestration.pipeline import SecureRagPipeline
 from secure_rag.sanitization.core import PrivacyGateway
 from secure_rag.sanitization.ner import EnsembleDetector
 from secure_rag.sanitization.regex import RegexDetector
@@ -18,7 +19,11 @@ class LiteralDetector:
     name = "literal"
 
     def detect(self, text: str) -> list[EntitySpan]:
-        values = {"Анна Смирнова": "PER", "СибНИА": "ORG"}
+        values = {
+            "Анна Смирнова": "PER",
+            "Анну Смирнову": "PER",
+            "СибНИА": "ORG",
+        }
         result = []
         for value, label in values.items():
             start = text.find(value)
@@ -73,6 +78,123 @@ class FakeManifest:
         return "build-test"
 
 
+def _bridge_config(tmp_path):
+    base = load_config()
+    config = replace(
+        base,
+        paths=replace(base.paths, runtime_root=(tmp_path / "runtime").resolve()),
+    )
+    config.ensure_runtime()
+    return config
+
+
+def test_bridge_ignores_known_value_occurring_only_in_trusted_prompt(tmp_path) -> None:
+    config = _bridge_config(tmp_path)
+    state = MarkerState()
+    marker = PrivacyGateway(None).mark_literal("Codex", "ORG", state)
+
+    result = BridgeManager(config).create(
+        f"Что такое {marker}?",
+        [],
+        state,
+        versions={},
+        provider="manual",
+        iterative_enabled=True,
+        max_iterations=3,
+    )
+
+    outbound = result.codex_input.read_text(encoding="utf-8")
+    assert "Правила для Codex" in outbound
+    assert f"Что такое {marker}?" in outbound
+
+
+def test_bridge_still_blocks_known_value_in_dynamic_context(tmp_path) -> None:
+    config = _bridge_config(tmp_path)
+    state = MarkerState()
+    marker = PrivacyGateway(None).mark_literal("Codex", "ORG", state)
+    contexts = [
+        {
+            "document_id": "opaque-document",
+            "chunk_id": "opaque-chunk",
+            "citation_ref": "R001",
+            "score": 0.9,
+            "source_ref": "opaque-document",
+            "file_type": "txt",
+            "text": "Немаркированное значение Codex.",
+        }
+    ]
+
+    with pytest.raises(
+        ValueError,
+        match="^Outbound validation found a known unmarked value$",
+    ):
+        BridgeManager(config).create(
+            f"Что такое {marker}?",
+            contexts,
+            state,
+            versions={},
+            provider="manual",
+        )
+
+    assert list(config.requests_path.iterdir()) == []
+
+
+def test_canonical_surname_propagates_when_ner_misses_bare_form(tmp_path) -> None:
+    class CompositeNameDetector:
+        name = "composite-name"
+
+        @staticmethod
+        def detect(text: str) -> list[EntitySpan]:
+            value = "О ? Егоров"
+            start = text.find(value)
+            if start < 0:
+                return []
+            return [
+                EntitySpan(
+                    start=start,
+                    end=start + len(value),
+                    label="PER",
+                    score=1.0,
+                    source="composite-name",
+                    priority=500,
+                )
+            ]
+
+    class SurnameRetriever(FakeRetriever):
+        def search(self, _query: str, top_k: int | None = None, *, on_event=None):
+            del top_k, on_event
+            return [
+                RetrievalHit(
+                    chunk_id="00000000-0000-0000-0000-000000000002",
+                    document_id="opaque-surname-document",
+                    revision="revision",
+                    score=0.9,
+                    start=0,
+                    end=30,
+                    text="О ? Егоров указан в списке.",
+                    source_name="список.txt",
+                )
+            ]
+
+    base = load_config()
+    config = replace(
+        base,
+        paths=replace(base.paths, runtime_root=(tmp_path / "runtime").resolve()),
+    )
+    config.ensure_runtime()
+    gateway = PrivacyGateway(CompositeNameDetector())
+    result = SecureRagPipeline(
+        config,
+        SurnameRetriever(),
+        gateway,
+        FakeManifest(),
+    ).run("Что известно про Егоров?", provider="manual")
+
+    outbound = result.codex_input.read_text(encoding="utf-8")
+    assert "Егоров" not in outbound
+    assert outbound.count("[[PER_0001]]") == 2
+
+
 def test_full_stub_flow_keeps_raw_values_out_of_codex_file(tmp_path) -> None:
     base = load_config()
     config = replace(
@@ -93,7 +215,8 @@ def test_full_stub_flow_keeps_raw_values_out_of_codex_file(tmp_path) -> None:
     assert "1000000 рублей" not in outbound
     assert "Личное дело Анны.docx" not in outbound
     assert "[[PER_0001]]" in outbound
-    assert "Анна Смирнова" in restored
+    assert "Сотрудник + PER-маркер + сказуемое" in outbound
+    assert "анна смирнова" in restored
     assert "test@example.org" in restored
 
 
@@ -121,7 +244,7 @@ def test_provider_controlled_link_is_restored_only_to_plain_text(tmp_path, monke
 
     restored = result.restored_output.read_text(encoding="utf-8")
     assert result.restored_output.name == "restored_answer.txt"
-    assert "https://invalid.example/?value=Анна Смирнова" in restored
+    assert "https://invalid.example/?value=Анну Смирнову" in restored
 
 
 def test_auto_falls_back_to_local_stub_without_api_key(
@@ -173,7 +296,7 @@ def test_responses_provider_is_automatic_and_demarks_response(tmp_path, monkeypa
         FakeManifest(),
     ).run("Что известно про Анну Смирнову?", provider="responses")
 
-    assert "Анна Смирнова" in result.restored_output.read_text(encoding="utf-8")
+    assert "Анну Смирнову" in result.restored_output.read_text(encoding="utf-8")
     manifest = json.loads((result.request_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["pilot_auto_send"] is True
     assert manifest["human_review_required"] is False
@@ -223,7 +346,7 @@ def test_provider_response_can_be_restored_after_ui_interrupt(tmp_path, monkeypa
 
     restored = pipeline.bridge.restore_staged(request_id)
 
-    assert "Анна Смирнова" in restored.read_text(encoding="utf-8")
+    assert "Анну Смирнову" in restored.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("restore_method", ["restore_text", "restore_file"])

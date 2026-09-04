@@ -23,8 +23,8 @@ Run these commands from the repository root:
 ```
 
 The launcher is idempotent. It stores only process metadata in
-`runtime/pids/streamlit.json` and writes Streamlit stdout/stderr to timestamped files in
-`runtime/logs`. Before stopping a PID, the stop script verifies the executable and full
+`runtime/run/pids/streamlit.json` and writes Streamlit stdout/stderr to timestamped files in
+`runtime/diagnostics/logs`. Before stopping a PID, the stop script verifies the executable and full
 Streamlit app path. A process on port 8501 that was not started by this launcher is
 reported but never stopped.
 
@@ -64,10 +64,10 @@ Do not add `--volumes` to `docker compose down` unless you intentionally want to
 delete the complete server index. `restart: unless-stopped` restarts Qdrant after
 Docker Desktop starts, except when the service was explicitly stopped.
 
-The default `config/pilot.yaml` now targets this server. The old embedded index in
-`runtime/qdrant` is not copied. On the next indexing run, the changed target is part
-of the index signature, so documents are safely embedded and inserted into the new
-server collection instead of being incorrectly skipped.
+The default `config/pilot.yaml` targets this server. Server vectors live only in the Docker
+named volume; `runtime/data/qdrant` is created only if embedded mode is explicitly selected.
+The Qdrant target is part of the index signature, so switching backends safely re-embeds
+documents instead of incorrectly skipping them.
 
 For a future remote server, set `SECURE_RAG_QDRANT_URL` and keep the API key only in
 `SECURE_RAG_QDRANT_API_KEY`; never commit it. Localhost mode intentionally has no API

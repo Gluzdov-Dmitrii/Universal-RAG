@@ -54,6 +54,12 @@ class RetrievalConfig:
     score_threshold: float | None
     hnsw_ef: int | None = None
     exact_search: bool = False
+    iterative_enabled: bool = True
+    max_iterations: int = 3
+    max_queries_per_iteration: int = 3
+    max_contexts: int = 24
+    rewrite_min_similarity: float = 0.55
+    adjacent_chunk_radius: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,6 +90,13 @@ class BridgeConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class GenerationConfig:
+    agent_workspace_root: Path | None
+    instruction_files: tuple[str, ...]
+    max_instruction_chars: int
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     repo_root: Path
     schema_version: int
@@ -93,27 +106,84 @@ class AppConfig:
     qdrant: QdrantConfig
     retrieval: RetrievalConfig
     sanitization: SanitizationConfig
+    generation: GenerationConfig
     bridge: BridgeConfig
 
     @property
+    def data_path(self) -> Path:
+        """Durable application data that must survive process restarts."""
+
+        return self.paths.runtime_root / "data"
+
+    @property
+    def state_path(self) -> Path:
+        """Private workflow state with an application-defined lifetime."""
+
+        return self.paths.runtime_root / "state"
+
+    @property
+    def cache_path(self) -> Path:
+        """Rebuildable local artifacts."""
+
+        return self.paths.runtime_root / "cache"
+
+    @property
+    def diagnostics_path(self) -> Path:
+        return self.paths.runtime_root / "diagnostics"
+
+    @property
+    def run_path(self) -> Path:
+        """Ephemeral process coordination state."""
+
+        return self.paths.runtime_root / "run"
+
+    @property
+    def temp_path(self) -> Path:
+        return self.paths.runtime_root / "tmp"
+
+    @property
     def manifest_path(self) -> Path:
-        return self.paths.runtime_root / "manifest" / "documents.sqlite"
+        return self.data_path / "manifest" / "documents.sqlite"
 
     @property
     def qdrant_path(self) -> Path:
-        return self.paths.runtime_root / "qdrant"
+        return self.data_path / "qdrant"
 
     @property
     def requests_path(self) -> Path:
-        return self.paths.runtime_root / "requests"
+        return self.state_path / "requests"
 
     @property
     def marker_vault_path(self) -> Path:
-        return self.paths.runtime_root / "marker-vault"
+        return self.state_path / "marker-vault"
 
     @property
     def model_cache_path(self) -> Path:
-        return self.paths.runtime_root / "model-cache"
+        return self.cache_path / "models"
+
+    @property
+    def extracted_text_cache_path(self) -> Path:
+        return self.cache_path / "extracted-text"
+
+    @property
+    def reports_path(self) -> Path:
+        return self.diagnostics_path / "reports"
+
+    @property
+    def logs_path(self) -> Path:
+        return self.diagnostics_path / "logs"
+
+    @property
+    def locks_path(self) -> Path:
+        return self.run_path / "locks"
+
+    @property
+    def pids_path(self) -> Path:
+        return self.run_path / "pids"
+
+    @property
+    def codex_sandbox_path(self) -> Path:
+        return self.temp_path / "codex-sandbox"
 
     def ensure_runtime(self) -> None:
         for path in (
@@ -123,7 +193,11 @@ class AppConfig:
             self.marker_vault_path,
             self.model_cache_path / "embeddings",
             self.model_cache_path / "ner",
-            self.paths.runtime_root / "reports",
+            self.reports_path,
+            self.logs_path,
+            self.locks_path,
+            self.pids_path,
+            self.temp_path,
         ):
             path.mkdir(parents=True, exist_ok=True)
 
@@ -184,6 +258,9 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
     qdrant = _need(raw, "qdrant")
     retrieval = _need(raw, "retrieval")
     sanitization = _need(raw, "sanitization")
+    generation = raw.get("llm", {})
+    workspace_override = os.getenv("SECURE_RAG_AGENT_WORKSPACE_ROOT")
+    workspace_value = workspace_override or generation.get("agent_workspace_root")
 
     config = AppConfig(
         repo_root=repo_root,
@@ -257,6 +334,30 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
                 "SECURE_RAG_RETRIEVAL_EXACT",
                 bool(retrieval.get("exact_search", False)),
             ),
+            iterative_enabled=_env_bool(
+                "SECURE_RAG_ITERATIVE_ENABLED",
+                bool(retrieval.get("iterative_enabled", True)),
+            ),
+            max_iterations=_env_int(
+                "SECURE_RAG_MAX_ITERATIONS",
+                int(retrieval.get("max_iterations", 3)),
+            ),
+            max_queries_per_iteration=_env_int(
+                "SECURE_RAG_MAX_QUERIES_PER_ITERATION",
+                int(retrieval.get("max_queries_per_iteration", 3)),
+            ),
+            max_contexts=_env_int(
+                "SECURE_RAG_MAX_CONTEXTS",
+                int(retrieval.get("max_contexts", 24)),
+            ),
+            rewrite_min_similarity=_env_float(
+                "SECURE_RAG_REWRITE_MIN_SIMILARITY",
+                float(retrieval.get("rewrite_min_similarity", 0.55)),
+            ),
+            adjacent_chunk_radius=_env_int(
+                "SECURE_RAG_ADJACENT_CHUNK_RADIUS",
+                int(retrieval.get("adjacent_chunk_radius", 1)),
+            ),
         ),
         sanitization=SanitizationConfig(
             marker_pattern_version=int(_need(sanitization, "marker_pattern_version")),
@@ -285,6 +386,19 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
                 for item in sanitization.get("models", [])
             ),
         ),
+        generation=GenerationConfig(
+            agent_workspace_root=(
+                None
+                if not workspace_value
+                else _resolve_path(str(workspace_value), repo_root)
+            ),
+            instruction_files=tuple(
+                str(item).replace("\\", "/").strip()
+                for item in generation.get("instruction_files", [])
+                if str(item).strip()
+            ),
+            max_instruction_chars=int(generation.get("max_instruction_chars", 20_000)),
+        ),
         bridge=BridgeConfig(
             max_output_chars=int(_need(_need(raw, "bridge"), "max_output_chars"))
         ),
@@ -305,6 +419,18 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         raise ValueError("retrieval.top_k must be between 1 and 100")
     if config.retrieval.hnsw_ef is not None and config.retrieval.hnsw_ef < 1:
         raise ValueError("retrieval.hnsw_ef must be positive")
+    if not 1 <= config.retrieval.max_iterations <= 5:
+        raise ValueError("retrieval.max_iterations must be between 1 and 5")
+    if not 1 <= config.retrieval.max_queries_per_iteration <= 5:
+        raise ValueError("retrieval.max_queries_per_iteration must be between 1 and 5")
+    if not config.retrieval.top_k <= config.retrieval.max_contexts <= 100:
+        raise ValueError("retrieval.max_contexts must be between top_k and 100")
+    if not 0.0 <= config.retrieval.rewrite_min_similarity <= 1.0:
+        raise ValueError("retrieval.rewrite_min_similarity must be between 0 and 1")
+    if not 0 <= config.retrieval.adjacent_chunk_radius <= 3:
+        raise ValueError("retrieval.adjacent_chunk_radius must be between 0 and 3")
+    if not 1 <= config.generation.max_instruction_chars <= 100_000:
+        raise ValueError("llm.max_instruction_chars must be between 1 and 100000")
     for model in config.sanitization.models:
         if not 0.0 <= model.threshold <= 1.0:
             raise ValueError(f"NER threshold must be between 0 and 1: {model.name}")

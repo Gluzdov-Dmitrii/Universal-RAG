@@ -1,107 +1,198 @@
-# Архитектура локального среза
+# Архитектура Secure RAG
 
-## Indexing
+Этот файл — единый источник истины о границах модулей, потоках данных и security-инвариантах.
+Команды запуска находятся в корневом README, эксплуатация Qdrant — в `deploy/README.md`.
 
-    Read-only source
-      → safe inventory
-      → document_id + SHA-256 revision
-      → extractor
-      → character windows with overlap
-      → local sentence embedding
-      → Qdrant upsert
+## Границы пакета
 
-Manifest хранит path локально. Qdrant хранит document_id, revision, character offsets,
-build_id и policy fields. Исходный chunk в payload не копируется.
+- `api`: принимает ввод и отображает результат; собирает зависимости через `composition`.
+- `orchestration`: координирует use case, но не знает деталей Streamlit/CLI.
+- `ingestion`: офлайн-инвентаризация, extraction, chunking, manifest и синхронизация индекса.
+- `retrieval`: локальный query embedding, Qdrant search, перечитывание исходника и attachments.
+- `sanitization`: detectors, overlap resolution, canonical markers и strict demarking.
+- `security`: явные fail-closed политики доступа и обработки информации.
+- `llm`: заменяемая генерация; contracts/factory не зависят от SDK, конкретные интеграции
+  изолированы в `llm/adapters`, а файловый bridge образует внешний privacy boundary.
+- `domain`: структуры данных без зависимостей от инфраструктуры.
+- `infrastructure`: узкие политики интеграции со сторонними runtime-библиотеками.
+- `config.py`: типизированная конфигурация; `composition.py`: создание concrete adapters.
 
-`delete_document` и каждый bounded upsert batch идемпотентны: point IDs определяются
-из document/revision/ordinal. Qdrant client и отдельная write-операция имеют timeout
-60 секунд; временные timeout/transport ошибки повторяются не более трёх попыток с
-коротким backoff. Если попытки исчерпаны, индексатор best-effort удаляет частично
-записанный документ и сохраняет только безопасную категорию ошибки. Следующий проход
-проверяет точное равенство manifest chunks и Qdrant points перед быстрым skip.
+Зависимости направлены от delivery к use cases и далее к специализированным слоям. Domain не
+импортирует другие слои. Нельзя переносить Streamlit, argparse, OpenAI SDK или Qdrant client в
+`domain`/`orchestration`. Новые внешние системы получают отдельный adapter; каталоги
+`connectors` и `tools` появятся только вместе с первой реальной реализацией.
 
-Persistent extracted-text cache в безопасном baseline выключен. Его явный opt-in
-создаёт локальную копию source-derived raw text и требует отдельной retention/encryption
-policy. Индексатор имеет межпроцессный single-writer lock; удаление unseen документов
-выполняется только явным `--prune-missing` после authoritative scan.
+Pipeline зависит от `Provider` protocol и получает concrete provider через `ProviderFactory`.
+Responses API, local Codex и будущая локальная модель взаимозаменяемы на этой границе. SDK,
+модельные настройки и особенности транспорта не должны просачиваться в orchestration.
 
-Web-процесс использует отдельный bounded LRU в RAM (revision + extraction-policy key).
-Он не участвует в CLI/indexing, не пишет raw text в runtime и не отменяет полный SHA-256
-исходника перед каждым cache lookup. `st.cache_resource` общий для web-сессий процесса,
-поэтому это только single-user pilot; multi-user deployment должен разделять cache по
-security principal или процессам. OS pagefile/crash dumps защищаются политикой хоста.
+## Runtime layout
+
+```text
+runtime/
+├── data/          durable SQLite manifest; embedded vectors только по явной конфигурации
+├── state/         private request workspaces и Marker Vault
+├── cache/         rebuildable model/extraction artifacts
+├── diagnostics/   logs, pipeline events и safe reports
+├── run/           process IDs и interprocess locks
+└── tmp/           disposable isolated workspaces
+```
+
+Feature-код использует только path properties `AppConfig`: литеральные runtime-подкаталоги
+допустимы в config/migration/launcher, но не распределяются по pipeline. Qdrant server хранит
+основной vector index в Docker named volume. `data/qdrant` не является штатным каталогом
+server-mode и создаётся embedded-адаптером только при явном выборе этого режима.
+`data` и `state` нельзя очищать как cache; `run` и `tmp` не являются backup-данными.
+
+## Indexing flow
+
+```text
+read-only source
+  → safe inventory + stable document_id + SHA-256 revision
+  → format-specific extractor
+  → deterministic character chunks
+  → local passage embeddings
+  → Qdrant upsert
+  → SQLite manifest commit
+```
+
+Manifest хранит локальный path и состояние целого документа. Qdrant хранит vector,
+document/revision/chunk IDs, offsets, build/signature и policy fields, но не raw text.
+Point IDs детерминированы. Повторяемые write-операции идемпотентны; временные ошибки имеют
+ограниченный retry, после чего manifest получает только безопасный error code.
+
+Indexer защищён межпроцессным single-writer lock. Fast skip допускается только при совпадении
+revision, index signature, manifest chunks и Qdrant points. Удаление unseen документов требует
+явного `--prune-missing` после полного authoritative scan.
+
+Persistent extracted-text cache выключен по умолчанию: его включение создаёт вторую копию
+чувствительного текста и требует retention/encryption policy. Web использует отдельный
+ограниченный RAM cache и всё равно проверяет SHA-256 исходника.
 
 ## Online flow
 
-    raw local question
-      → local query embedding
-      → Qdrant filter inside search
-      → IDs + offsets
-      → reread original locally
-      → regex + NER spans
-      → overlap resolver
-      → Marker Vault + sanitized Markdown
-      → no-tools Responses API / manual bridge / local mock
-      → strict marker validation
-      → durable sanitized response staging
-      → local restoration
+```text
+raw local question
+  → local query embedding
+  → Qdrant filter: access_group AND goz=false AND is_final=true
+  → opaque IDs + offsets
+  → local source rehydration
+  → regex + NER + overlap resolution
+  → Marker Vault + sanitized payload
+  → no-tools Responses API / manual bridge / local stub
+  → final answer OR validated retrieval_request
+       → local marker restore for query only
+       → semantic anchor check + multi-query retrieval / adjacent citation expansion
+       → re-sanitize all accumulated context in the same marker namespace
+       → repeat up to max_iterations
+  → strict marker and leak validation
+  → durable sanitized response staging
+  → local demarking
+  → local citation-to-path mapping for UI/CLI
+```
 
-Raw query не надо маркировать до retrieval: embedding и поиск локальны. Privacy boundary
-начинается перед созданием codex_input.txt.
+Query не маркируется до retrieval: embedding и поиск локальны, а ранняя замена сущностей
+ухудшает релевантность. Privacy boundary начинается до создания `codex_input.txt`.
 
-## Контракты
+Provider не получает настоящий Qdrant/SQLite tool. Он может вернуть только точный
+`retrieval_request` envelope с ограниченным списком queries и `expand_citations`. Любое
+отклонение от схемы блокируется. Markers из rewrite восстанавливаются локально, неизвестные
+markers запрещены, а cosine similarity не позволяет rewrite слишком далеко уйти от исходного
+вопроса. Расширять соседние chunks можно только для citation, уже прошедшего policy filter.
+В persistent `codex-local` режиме один request соответствует одному Codex thread, и все его
+retrieval-итерации продолжают этот thread. Thread запускается с точным `cwd` отдельного
+`llm.agent_workspace_root`, благодаря чему Codex Desktop относит его к проекту `RAG Test`;
+разные requests не разделяют историю и marker namespace.
 
-- DocumentRecord: stable ID, local path, revision, size/mtime and status.
-- ChunkRecord: ID, document/revision, ordinal, offsets, raw text only in process memory.
-- RetrievalHit: local text plus opaque source identity and score.
-- EntitySpan: start, end, normalized label, score, detector and priority.
-- MarkerState: marker-to-value map; exists only in the request vault.
-- BridgeResult: paths and safe counters, without raw values.
+Внешняя LLM видит `file_type` и opaque `Rxxx`, но не filename/path. Для `xls/xlsx/csv` prompt
+разрешает запросить соседние chunks, если не хватает заголовков или строк. Реальные абсолютные
+пути собираются из проверенного `DocumentRecord.source_path`, сохраняются отдельно в локальном
+`sources.json` и показываются пользователю после выполнения. Во время extraction PDF pages,
+PPTX slides и XLSX sheets получают диапазоны в нормализованном тексте. Chunk наследует
+пересекающуюся локацию (включая диапазон при переходе через границу), а `sources.json`
+связывает её с конкретным `Rxxx`. Для DOCX extractor читает сохранённый Word page count и
+строит пропорциональную оценку по char offsets; наружу она маркируется как `approx_page`, а UI
+показывает `примерно стр.`. Это навигационная подсказка, не точная пагинация: достоверная
+страница потребует одинакового с Word layout/render engine.
+Indexer сохраняет chunk location и в SQLite manifest, и в Qdrant payload; retrieval повторно
+вычисляет её по char offsets только как совместимый fallback для ранее построенных points.
+Бинарные `.doc`/`.xls` не входят в поддерживаемый ingestion contract.
 
-## Выбор моделей
+## Security invariants
 
-- intfloat/multilingual-e5-small, revision
-  614241f622f53c4eeff9890bdc4f31cfecc418b3: текущий dense baseline,
-  384 dimensions, окно 512 токенов, Russian, query/passage prefixes, MIT.
-- sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2, revision
-  e8f8c211226b894fcb81acc59f3b34ba3efd5f42: предыдущий лёгкий baseline,
-  384 dimensions, 50 languages, Apache-2.0, max sequence length 128.
-- LLAIMlegal/ru-legal-ner, revision
-  c0313a42ac147ccc38f5c3b0b3e77cab53208683: small legal-domain candidate; MIT;
-  requires internal validation.
-- viktor-shcherb/sberbank-rubert-base-collection3, revision
-  65ccbf8d2d25229c3858631bb24bb794c0c6907c: PER/ORG/LOC; Apache-2.0 weights,
-  but dataset provenance should be reviewed.
+1. Retrieval и embeddings выполняются локально по исходному запросу.
+2. Access filter применяется внутри vector search, а не после получения кандидатов.
+3. В outbound не входят raw path, Marker Vault и исходный filename.
+4. Query и все chunks каждой итерации используют один request marker namespace.
+5. Ошибка sanitizer завершает запрос; fallback на raw payload запрещён.
+6. Неизвестный marker или известное немаркированное значение блокирует restoration/outbound.
+7. Текст документов и provider output считаются недоверенными данными и не исполняются.
+8. HF-модели обычно открываются только из локального cache с pinned revision.
+9. Provider output сначала атомарно сохраняется в sanitized staging и лишь затем demark-ится.
+10. Технические события и ошибки не содержат вопрос, raw path или значения сущностей.
+11. Provider-controlled retrieval ограничен ACL исходного запроса, schema/size limits,
+    semantic anchor и max iterations/contexts.
 
-All models load with trust_remote_code disabled and safetensors where applicable.
+Baseline NER не доказывает отсутствие false negatives. До коммерческих данных нужен
+размеченный security set с canary в query, chunk, filename, metadata и errors, измерение recall
+критичных классов и согласованный human-review/fail-closed outbound gate.
 
-Primary references:
+## Основные контракты
 
-- https://huggingface.co/intfloat/multilingual-e5-small
-- https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2
-- https://huggingface.co/LLAIMlegal/ru-legal-ner
-- https://huggingface.co/viktor-shcherb/sberbank-rubert-base-collection3
-- https://github.com/qdrant/qdrant-client#local-mode
+- `DocumentRecord`: stable ID, local path, revision, size/mtime и status.
+- `ChunkRecord`: document/revision, ordinal, char offsets и source location; raw text только в
+  памяти процесса.
+- `RetrievalHit`: локальный текст, verified local path, file type, ordinal, offsets, source
+  location и score.
+- `EntitySpan`: offsets, normalized label, detector, score и priority.
+- `MarkerState`: marker map и aliases; существует только в request vault/process.
+- `DocumentSource`: локальная карта citations к проверенному пути, file type и доступной
+  странице/слайду/листу.
+- `BridgeResult`: request artifacts, sources, iteration/counter metadata.
 
-## Следующая замена заглушек
+## Версии и совместимость индекса
 
-1. Локальный Qdrant server v1.19.0 → production server с backup и API key.
-2. Pilot policy fields → trusted ACL/ГОЗ/final-version connector.
-3. Plain JSON Marker Vault → encrypted per-user/session storage.
-4. Provider policy → production API credentials, approved model and outbound audit.
-5. Baseline NER → immutable approved artifact from ft-bert/MLflow.
-6. Only then Bitrix, tool gateway, hybrid retrieval and reranker.
+Совместимость определяется не только Git-кодом. Index signature включает extraction,
+chunking, embedding model revision и релевантную конфигурацию. Изменение семантики этих
+компонентов требует version bump/signature change.
 
-Server mode уже включён: `qdrant.mode=server`, URL можно переопределить через
-`SECURE_RAG_QDRANT_URL`, а ключ передаётся только через `SECURE_RAG_QDRANT_API_KEY`.
+Текущий dense baseline — `intfloat/multilingual-e5-small`, 384 dimensions, окно до 512
+токенов и обязательные `query:`/`passage:` prefixes. Legal NER и Collection3 остаются pilot
+кандидатами и должны пройти внутреннюю валидацию. Обучение доменного NER развивается отдельно
+в `../ft-bert`; этот репозиторий потребляет только одобренный artifact.
 
-## Provider boundary
+## Что ещё не реализовано из целевой схемы
 
-`auto` выбирает официальный Responses API, только если процесс получил
-`OPENAI_API_KEY`; иначе выбирается локальный `stub`. В API-вызове не передаётся
-параметр `tools`, а `store=False`. Авторизация подписки Codex не заменяет API key.
+- trusted ACL/ГОЗ/final-version connectors;
+- Bitrix/1C/Nextcloud adapters и multi-user session isolation;
+- encrypted Marker Vault и per-user workspaces;
+- hybrid BM25 + dense + RRF + reranker;
+- LangGraph workflow с типизированными retrieval tools вместо текущего prompt protocol;
+- allowlisted local tool gateway;
+- versioned Qdrant collections с atomic alias switch;
+- monitoring экономического эффекта, backup/restore и production rollout.
 
-`codex-local` — отдельный явно небезопасный режим. Его `read_only` sandbox ограничивает
-запись, но не список читаемых файлов: на этом ПК SDK смог прочитать доступный файл на
-`D:\RAG TEST`. Поэтому local coding agent не находится за privacy boundary, даже если
-его cwd вынесен из репозитория.
+Не добавляйте заглушечные packages под эти элементы: новый каталог должен иметь владельца,
+контракт, тест и реальный вызывающий поток.
+
+## Codex client workspace
+
+User-facing Codex agent должен запускаться из отдельного пустого client workspace, который не
+содержит этот repository, runtime БД или source documents. Его rules/skills описывают только
+формат ответа и `retrieval_request` protocol. Project root сам по себе не ограничивает чтение.
+Production-safe путь: backend загружает только перечисленные в `llm.instruction_files` файлы,
+проверяет, что workspace не пересекается с repo/source/runtime, и передаёт их no-tools provider
+как trusted instructions. Responses provider видит только эти инструкции и sanitized payload,
+сформированный `llm/bridge.py`. Небезопасный `codex-local` использует workspace как `cwd` и
+может читать его файлы; поэтому там допустимы только управляемые инструкции. Обычная Codex
+project task не считается privacy boundary.
+
+Каноническая версия компонента хранится в `llm-workspaces/rag-test/`. Каталог содержит только
+переносимые `AGENTS.md`, project agent, rule, skill и manifest управляемых файлов. Скрипт
+`scripts/sync-rag-agent-workspace.ps1` разворачивает их в отдельный Codex project и умеет
+fail-fast проверять drift. На inference-машине target path задаётся независимо от repository;
+backend и LLM workspace могут находиться на разных виртуальных или физических машинах и
+связываться через будущий узкий transport/tool gateway.
+
+Названия Codex-проектов отражают разные роли: `HF NER BERT LLM` используется для разработки,
+а `RAG Test` является экземпляром пользовательского LLM-компонента.

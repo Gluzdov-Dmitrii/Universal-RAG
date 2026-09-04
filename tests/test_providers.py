@@ -5,11 +5,8 @@ from types import SimpleNamespace
 import openai
 import pytest
 
-from secure_rag.providers import (
-    LocalCodexProvider,
-    OpenAIResponsesProvider,
-    resolve_provider_name,
-)
+from secure_rag.llm.adapters import LocalCodexProvider, OpenAIResponsesProvider
+from secure_rag.llm.factory import resolve_provider_name
 
 
 class FakeResponses:
@@ -118,7 +115,7 @@ def test_codex_local_workspace_root_stays_outside_private_roots(monkeypatch, tmp
     assert not provider.sandbox_root.is_relative_to(repo_root)
 
 
-def test_codex_local_persists_separate_thread_when_configured(
+def test_codex_local_keeps_iterations_in_one_project_thread_when_configured(
     monkeypatch, tmp_path
 ) -> None:
     import sys
@@ -126,6 +123,8 @@ def test_codex_local_persists_separate_thread_when_configured(
     calls: list[tuple[str, object]] = []
 
     class FakeThread:
+        id = "persistent-thread-id"
+
         @staticmethod
         def set_name(name):
             calls.append(("name", name))
@@ -149,6 +148,10 @@ def test_codex_local_persists_separate_thread_when_configured(
             calls.append(("start", kwargs))
             return FakeThread()
 
+        def thread_resume(self, thread_id, **kwargs):
+            calls.append(("resume", (thread_id, kwargs)))
+            return FakeThread()
+
     fake_module = SimpleNamespace(
         ApprovalMode=SimpleNamespace(deny_all="deny_all"),
         Codex=FakeCodex,
@@ -160,14 +163,49 @@ def test_codex_local_persists_separate_thread_when_configured(
     monkeypatch.setenv("SECURE_RAG_ALLOW_UNSAFE_CODEX_LOCAL", "1")
     monkeypatch.setenv("SECURE_RAG_CODEX_PERSIST_THREADS", "1")
 
-    answer = LocalCodexProvider().answer_payload(
+    project_root = (tmp_path / "RAG Test").resolve()
+    project_root.mkdir()
+    provider = LocalCodexProvider(project_root=project_root)
+    answer = provider.answer_payload(
         "Запрос с [[PER_0001]]", "00000000-0000-4000-8000-000000000002"
+    )
+    second_answer = provider.answer_payload(
+        "Уточнённый запрос с [[PER_0001]]",
+        "00000000-0000-4000-8000-000000000002",
     )
 
     assert answer == "Ответ с [[PER_0001]]\n"
-    options = next(value for name, value in calls if name == "start")
+    assert second_answer == answer
+    starts = [value for name, value in calls if name == "start"]
+    assert len(starts) == 1
+    options = starts[0]
     assert options["ephemeral"] is False
+    assert options["cwd"] == str(project_root)
     assert options["sandbox"] == "read_only"
     assert options["approval_mode"] == "deny_all"
-    assert ("name", "Secure RAG 00000000") in calls
-    assert calls[-1] == ("run", "Запрос с [[PER_0001]]")
+    assert calls.count(("name", "Secure RAG 00000000")) == 1
+    resumed = next(value for name, value in calls if name == "resume")
+    assert resumed[0] == FakeThread.id
+    assert resumed[1]["cwd"] == str(project_root)
+    workspaces = [value["cwd"] for name, value in calls if name == "config"]
+    assert len(workspaces) == 2
+    assert workspaces == [str(project_root), str(project_root)]
+    assert calls[-1] == ("run", "Уточнённый запрос с [[PER_0001]]")
+
+
+def test_codex_local_project_root_must_stay_outside_private_roots(
+    monkeypatch, tmp_path
+) -> None:
+    private_root = (tmp_path / "private").resolve()
+    project_root = private_root / "project"
+    project_root.mkdir(parents=True)
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
+    monkeypatch.setenv("SECURE_RAG_ALLOW_UNSAFE_CODEX_LOCAL", "1")
+
+    with pytest.raises(
+        ValueError, match="^codex_local_project_overlaps_private_root$"
+    ):
+        LocalCodexProvider(
+            forbidden_roots=(private_root,),
+            project_root=project_root,
+        )

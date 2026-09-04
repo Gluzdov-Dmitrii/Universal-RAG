@@ -6,8 +6,8 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $pythonPath = [IO.Path]::GetFullPath((Join-Path $repoRoot ".venv\Scripts\python.exe"))
-$appPath = [IO.Path]::GetFullPath((Join-Path $repoRoot "src\secure_rag\web_app.py"))
-$pidFile = Join-Path $repoRoot "runtime\pids\streamlit.json"
+$appPath = [IO.Path]::GetFullPath((Join-Path $repoRoot "src\secure_rag\api\web.py"))
+$pidFile = Join-Path $repoRoot "runtime\run\pids\streamlit.json"
 $appHealthUrl = "http://127.0.0.1:8501/_stcore/health"
 $qdrantHealthUrl = "http://127.0.0.1:6333/readyz"
 

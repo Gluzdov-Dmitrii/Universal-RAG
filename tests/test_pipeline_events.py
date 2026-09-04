@@ -7,9 +7,9 @@ from dataclasses import replace
 import pytest
 
 from secure_rag.config import load_config
-from secure_rag.embeddings import HashingEmbedder
-from secure_rag.events import JsonlEventLog, PipelineEvent
-from secure_rag.pipeline import SecureRagPipeline
+from secure_rag.orchestration.events import JsonlEventLog, PipelineEvent
+from secure_rag.orchestration.pipeline import SecureRagPipeline
+from secure_rag.retrieval.embeddings import HashingEmbedder
 from secure_rag.sanitization.core import PrivacyGateway
 from secure_rag.sanitization.ner import EnsembleDetector
 from secure_rag.sanitization.regex import RegexDetector

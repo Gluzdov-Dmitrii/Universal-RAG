@@ -5,10 +5,10 @@ from types import SimpleNamespace
 
 from streamlit.testing.v1 import AppTest
 
-import secure_rag.web_app as web_app
+import secure_rag.api.web as web_app
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-WEB_APP_PATH = PROJECT_ROOT / "src" / "secure_rag" / "web_app.py"
+WEB_APP_PATH = PROJECT_ROOT / "src" / "secure_rag" / "api" / "web.py"
 
 
 def _copy_config(tmp_path: Path) -> Path:
@@ -47,6 +47,15 @@ def test_config_snapshot_retries_until_hash_matches_loaded_file(monkeypatch) -> 
     assert load_calls == 2
 
 
+def test_relative_web_config_resolves_from_repository_after_api_move() -> None:
+    config, config_hash = web_app._load_config_snapshot("config/pilot.yaml")
+
+    assert config.repo_root == PROJECT_ROOT
+    assert config_hash == web_app._config_content_hash(
+        str(PROJECT_ROOT / "config" / "pilot.yaml")
+    )
+
+
 def test_resource_caches_invalidate_when_config_contents_change(
     tmp_path, monkeypatch
 ) -> None:
@@ -55,6 +64,13 @@ def test_resource_caches_invalidate_when_config_contents_change(
     created_gateways: list[object] = []
     embedder_configs: list[object] = []
     gateway_configs: list[object] = []
+
+    class GatewayResource:
+        @staticmethod
+        def mark_literal(value, _label, state):
+            marker = "[[PER_0001]]"
+            state.marker_to_aliases.setdefault(marker, set()).add(value)
+            return marker
 
     def create_embedder(config):
         embedder_configs.append(config)
@@ -65,7 +81,7 @@ def test_resource_caches_invalidate_when_config_contents_change(
     def create_gateway(config, *, mode):
         assert mode == "regex"
         gateway_configs.append(config)
-        resource = object()
+        resource = GatewayResource()
         created_gateways.append(resource)
         return resource
 
@@ -78,7 +94,11 @@ def test_resource_caches_invalidate_when_config_contents_change(
             str(config_path), first_hash, first_config
         )
         first_gateway = web_app.cached_gateway(
-            str(config_path), first_hash, "regex", first_config
+            str(config_path),
+            first_hash,
+            web_app._gateway_content_hash(),
+            "regex",
+            first_config,
         )
         first_text_cache = web_app.cached_extracted_text(
             str(config_path), first_hash, first_config
@@ -90,7 +110,11 @@ def test_resource_caches_invalidate_when_config_contents_change(
         )
         assert (
             web_app.cached_gateway(
-                str(config_path), first_hash, "regex", first_config
+                str(config_path),
+                first_hash,
+                web_app._gateway_content_hash(),
+                "regex",
+                first_config,
             )
             is first_gateway
         )
@@ -105,7 +129,11 @@ def test_resource_caches_invalidate_when_config_contents_change(
             str(config_path), changed_hash, changed_config
         )
         changed_gateway = web_app.cached_gateway(
-            str(config_path), changed_hash, "regex", changed_config
+            str(config_path),
+            changed_hash,
+            web_app._gateway_content_hash(),
+            "regex",
+            changed_config,
         )
         changed_text_cache = web_app.cached_extracted_text(
             str(config_path), changed_hash, changed_config
@@ -143,9 +171,10 @@ def test_run_question_reuses_supplied_config_snapshot(tmp_path, monkeypatch) -> 
         observed_configs.append(supplied_config)
         return embedder
 
-    def cached_gateway(path, digest, mode, supplied_config):
+    def cached_gateway(path, digest, implementation_hash, mode, supplied_config):
         assert path == str(config_path)
         assert digest == config_hash
+        assert implementation_hash == web_app._gateway_content_hash()
         assert mode == "regex"
         observed_configs.append(supplied_config)
         return gateway
@@ -222,29 +251,37 @@ def test_run_question_reuses_supplied_config_snapshot(tmp_path, monkeypatch) -> 
     assert store.closed
 
 
-def test_app_form_clears_and_keeps_single_neutral_submit_control() -> None:
+def test_app_form_preserves_question_and_keeps_single_neutral_submit_control(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("SECURE_RAG_CONFIG", str(tmp_path / "missing-pilot.yaml"))
     app = AppTest.from_file(str(WEB_APP_PATH), default_timeout=10).run()
 
     assert not app.exception
     assert [button.label for button in app.button] == ["Отправить"]
     form = next(child for child in app.main.children.values() if child.type == "form")
-    assert form.proto.form.clear_on_submit
+    assert not form.proto.form.clear_on_submit
     assert len(app.text_input) == 1
     placeholder = app.text_input[0].placeholder
     assert "RAG TEST" not in placeholder
     assert "D:" not in placeholder
 
+    question = "Нужно сохранить этот вопрос после ошибки"
+    app.text_area[0].set_value(question)
     app.text_input[0].set_value("папка/документ.docx")
     app.button[0].click().run()
 
     assert not app.exception
-    assert app.text_area[0].value == ""
-    assert [error.value for error in app.error] == ["Введите вопрос."]
+    assert app.text_area[0].value == question
+    assert any("FileNotFoundError" in error.value for error in app.error)
 
 
 def test_app_renders_provider_answer_as_plain_text() -> None:
     answer = '**private**\n<img src="https://example.test/leak">'
     app = AppTest.from_file(str(WEB_APP_PATH), default_timeout=10).run()
+    original_question = "Исходный вопрос для продолжения диалога"
+    app.session_state["question"] = original_question
     app.session_state["last_run"] = {
         "answer": answer,
         "request_id": "request-id",
@@ -261,7 +298,62 @@ def test_app_renders_provider_answer_as_plain_text() -> None:
 
     assert not app.exception
     assert [button.label for button in app.button] == ["Отправить"]
+    assert app.text_area[0].value == original_question
     assert [(code.value, code.language) for code in app.code] == [
         (answer, "plaintext")
     ]
     assert all(answer not in markdown.value for markdown in app.markdown)
+
+
+def test_app_renders_local_source_paths_separately_from_answer() -> None:
+    app = AppTest.from_file(str(WEB_APP_PATH), default_timeout=10).run()
+    app.session_state["last_run"] = {
+        "answer": "plain answer with R001",
+        "request_id": "request-id",
+        "retrieved_count": 1,
+        "marker_count": 0,
+        "provider": "stub",
+        "iterations": 1,
+        "sources": [
+            {
+                "citation_refs": ["R001"],
+                "path": r"D:\RAG TEST\folder\document.xlsx",
+                "file_type": "xlsx",
+                "best_score": 0.9,
+                "locations": [
+                    {
+                        "citation_ref": "R001",
+                        "kind": "sheet",
+                        "start": "Расчёты",
+                        "end": None,
+                    }
+                ],
+            },
+            {
+                "citation_refs": ["R002"],
+                "path": r"D:\RAG TEST\folder\report.docx",
+                "file_type": "docx",
+                "best_score": 0.8,
+                "locations": [
+                    {
+                        "citation_ref": "R002",
+                        "kind": "approx_page",
+                        "start": "7",
+                        "end": None,
+                    }
+                ],
+            },
+        ],
+        "sources_path": r"C:\runtime\request\sources.json",
+        "codex_input": "",
+        "event_log": "",
+        "events": [],
+        "total_ms": 1.0,
+    }
+
+    app.run()
+
+    values = [code.value for code in app.code]
+    assert "plain answer with R001" in values
+    assert r"R001 · xlsx · лист Расчёты · D:\RAG TEST\folder\document.xlsx" in values
+    assert r"R002 · docx · примерно стр. 7 · D:\RAG TEST\folder\report.docx" in values

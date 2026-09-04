@@ -9,20 +9,21 @@ import httpx
 import numpy as np
 import pytest
 from filelock import FileLock
+from openpyxl import Workbook
 from qdrant_client.http.exceptions import ResponseHandlingException
 
-import secure_rag.indexer as indexer_module
-import secure_rag.vector_store as vector_store_module
-from secure_rag.chunking import chunk_text
+import secure_rag.ingestion.indexer as indexer_module
+import secure_rag.retrieval.vector_store as vector_store_module
 from secure_rag.config import load_config
-from secure_rag.embeddings import HashingEmbedder
-from secure_rag.extractors import ExtractionError, extract_document
-from secure_rag.indexer import Indexer
-from secure_rag.manifest import ManifestStore
-from secure_rag.models import ChunkRecord
-from secure_rag.retrieval import Retriever
-from secure_rag.signatures import compute_index_signature
-from secure_rag.vector_store import (
+from secure_rag.domain.models import ChunkRecord
+from secure_rag.ingestion.chunking import chunk_text
+from secure_rag.ingestion.extractors import ExtractionError, extract_document
+from secure_rag.ingestion.indexer import Indexer
+from secure_rag.ingestion.manifest import ManifestStore
+from secure_rag.ingestion.signatures import compute_index_signature
+from secure_rag.retrieval.embeddings import HashingEmbedder
+from secure_rag.retrieval.service import Retriever
+from secure_rag.retrieval.vector_store import (
     UPSERT_BATCH_SIZE,
     QdrantStore,
     QdrantTransientWriteError,
@@ -190,6 +191,61 @@ def test_incremental_index_and_filtered_retrieval(tmp_path) -> None:
         assert store.count() == 0
 
 
+def test_new_xlsx_persists_sheet_location_in_manifest_and_qdrant(tmp_path) -> None:
+    source = (tmp_path / "source").resolve()
+    source.mkdir()
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Расчёты"
+    sheet.append(["Показатель", "Значение"])
+    sheet.append(["Масса", 125])
+    workbook.save(source / "report.xlsx")
+    base = load_config()
+    config = replace(
+        base,
+        paths=replace(
+            base.paths,
+            source_root=source,
+            runtime_root=(tmp_path / "runtime").resolve(),
+        ),
+    )
+    config.ensure_runtime()
+    embedder = HashingEmbedder(64)
+
+    with (
+        ManifestStore(config.manifest_path) as manifest,
+        QdrantStore(
+            config.qdrant_path,
+            "source_location_collection",
+            embedder.dimension,
+        ) as store,
+    ):
+        report = Indexer(config, embedder, manifest, store).run()
+        manifest_location = manifest.connection.execute(
+            """
+            SELECT location_kind, location_start, location_end
+            FROM chunks
+            """
+        ).fetchone()
+        points, _ = store.client.scroll(
+            collection_name=store.collection_name,
+            limit=10,
+            with_payload=True,
+            with_vectors=False,
+        )
+
+    assert report.indexed == 1
+    assert dict(manifest_location) == {
+        "location_kind": "sheet",
+        "location_start": "Расчёты",
+        "location_end": None,
+    }
+    assert len(points) == 1
+    assert points[0].payload["location_kind"] == "sheet"
+    assert points[0].payload["location_start"] == "Расчёты"
+    assert points[0].payload["location_end"] is None
+
+
 def test_index_progress_is_aggregate_and_log_safe(tmp_path) -> None:
     source = tmp_path / "source"
     source.mkdir()
@@ -300,7 +356,7 @@ def test_second_index_writer_is_rejected(tmp_path) -> None:
     )
     config.ensure_runtime()
     embedder = HashingEmbedder(64)
-    lock_path = config.paths.runtime_root / "locks" / "index-build.lock"
+    lock_path = config.locks_path / "index-build.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
 
     with (
@@ -326,7 +382,7 @@ def test_stale_lock_file_does_not_block_index_after_process_exit(tmp_path) -> No
         ),
     )
     config.ensure_runtime()
-    lock_path = config.paths.runtime_root / "locks" / "index-build.lock"
+    lock_path = config.locks_path / "index-build.lock"
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     lock_path.write_text("left by terminated process", encoding="utf-8")
     embedder = HashingEmbedder(64)
@@ -439,7 +495,7 @@ def test_keyboard_interrupt_closes_build_and_releases_lock(
 
     assert row["status"] == "failed"
     assert row["finished_at"] is not None
-    lock = FileLock(str(config.paths.runtime_root / "locks" / "index-build.lock"))
+    lock = FileLock(str(config.locks_path / "index-build.lock"))
     with lock.acquire(timeout=0):
         pass
 

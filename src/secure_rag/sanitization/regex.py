@@ -4,7 +4,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from ..models import EntitySpan
+from ..domain.models import EntitySpan
 
 Validator = Callable[[str], bool]
 

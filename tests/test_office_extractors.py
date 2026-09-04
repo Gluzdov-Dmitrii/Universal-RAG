@@ -7,19 +7,20 @@ from datetime import date
 from zipfile import ZIP_DEFLATED, ZipFile
 
 import pytest
+from docx import Document
 from openpyxl import Workbook
 from pptx import Presentation
 from pptx.util import Inches
 
-import secure_rag.extractors as extractors_module
+import secure_rag.ingestion.extractors as extractors_module
 from secure_rag.config import load_config
-from secure_rag.extractors import ExtractionError, extract_document
+from secure_rag.ingestion.extractors import ExtractionError, extract_document
 
 
 @pytest.mark.parametrize(
     ("extension", "helper_name", "logger_namespace", "helper_result"),
     [
-        (".pdf", "_extract_pdf", "pypdf", ("Извлечённый текст", 1, False)),
+        (".pdf", "_extract_pdf", "pypdf", ("Извлечённый текст", 1, False, (1,))),
         (".xlsx", "_extract_xlsx", "openpyxl", ("Извлечённый текст", False)),
     ],
 )
@@ -123,6 +124,61 @@ def test_xlsx_extracts_sheet_names_and_cached_scalar_values(tmp_path) -> None:
     assert "Код\t17" in first.text
     assert "=SUM" not in first.text
     assert not first.truncated
+    assert [(item.kind, item.value) for item in first.locations] == [
+        ("sheet", "Расчёты"),
+        ("sheet", "Справочник"),
+    ]
+
+
+def test_pdf_extraction_records_normalized_page_ranges(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "pages.pdf"
+    path.write_bytes(b"placeholder")
+    monkeypatch.setattr(
+        extractors_module,
+        "_extract_pdf",
+        lambda *_args: (
+            "первая\n\n[PAGE_BREAK]\n\nвторая",
+            2,
+            False,
+            (1, 2),
+        ),
+    )
+
+    result = extract_document(path, load_config().ingestion)
+
+    assert result.text == "первая\n\n[PAGE_BREAK]\n\nвторая"
+    assert [(item.kind, item.value) for item in result.locations] == [
+        ("page", "1"),
+        ("page", "2"),
+    ]
+    assert result.locations[0].end == result.locations[1].start
+    assert result.locations[-1].end == len(result.text)
+
+
+def test_docx_uses_saved_page_count_for_explicitly_approximate_locations(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    path = tmp_path / "report.docx"
+    document = Document()
+    document.add_paragraph("Первый раздел " * 80)
+    document.add_paragraph("Второй раздел " * 80)
+    document.save(path)
+
+    saved_result = extract_document(path, load_config().ingestion)
+    assert saved_result.page_count == 1
+    assert [(item.kind, item.value) for item in saved_result.locations] == [
+        ("approx_page", "1")
+    ]
+
+    monkeypatch.setattr(extractors_module, "_docx_saved_page_count", lambda _path: 4)
+    estimated_result = extract_document(path, load_config().ingestion)
+
+    assert estimated_result.page_count == 4
+    assert [item.value for item in estimated_result.locations] == ["1", "2", "3", "4"]
+    assert all(item.kind == "approx_page" for item in estimated_result.locations)
+    assert estimated_result.locations[0].start == 0
+    assert estimated_result.locations[-1].end == len(estimated_result.text)
 
 
 def test_xlsx_stops_at_extracted_character_limit(tmp_path) -> None:
@@ -162,6 +218,7 @@ def test_pptx_extracts_text_tables_and_notes_in_slide_order(tmp_path) -> None:
     assert "Масса\t125" in result.text
     assert "[NOTES]\nКомментарий докладчика" in result.text
     assert not result.truncated
+    assert [(item.kind, item.value) for item in result.locations] == [("slide", "1")]
 
 
 def test_office_archive_with_extreme_compression_is_rejected(tmp_path) -> None:

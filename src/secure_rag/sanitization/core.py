@@ -3,12 +3,36 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 
-from ..models import EntitySpan, MarkerState, SanitizedField
+from ..domain.models import EntitySpan, MarkerState, SanitizedField
 from .ner import SpanDetector
+from .normalization import (
+    canonical_marker_value,
+    marker_display_value,
+    marker_identity_key,
+)
 
 MARKER_RE = re.compile(r"\[\[[A-Z][A-Z0-9_]*_\d{4,}\]\]")
 MARKER_LIKE_RE = re.compile(r"\[\[[^\[\]\r\n]{1,80}\]\]")
 SAFE_LABEL_RE = re.compile(r"[^A-Z0-9_]+")
+
+
+def _known_value_pattern(value: str) -> re.Pattern[str] | None:
+    candidate = value.strip()
+    if len(candidate) < 3:
+        return None
+    prefix = r"(?<!\w)" if candidate[0].isalpha() else ""
+    suffix = r"(?!\w)" if candidate[-1].isalpha() else ""
+    return re.compile(
+        f"{prefix}{re.escape(candidate)}{suffix}",
+        flags=re.IGNORECASE,
+    )
+
+
+def _contains_known_value(text: str, value: str) -> bool:
+    """Match a known value without treating it as part of a larger word."""
+
+    pattern = _known_value_pattern(value)
+    return pattern is not None and pattern.search(text) is not None
 
 
 def merge_spans(spans: Iterable[EntitySpan]) -> list[EntitySpan]:
@@ -44,15 +68,22 @@ class PrivacyGateway:
 
     def mark_literal(self, value: str, label: str, state: MarkerState) -> str:
         safe_label = self._safe_label(label)
-        key = (safe_label, value)
+        canonical_value = canonical_marker_value(safe_label, value)
+        display_value = marker_display_value(safe_label, value)
+        _, identity_value = marker_identity_key(safe_label, value)
+        key = (safe_label, identity_value)
         existing = state.value_to_marker.get(key)
         if existing is not None:
+            state.marker_to_aliases.setdefault(existing, set()).update(
+                {value, canonical_value, display_value}
+            )
             return existing
         number = state.counters.get(safe_label, 0) + 1
         state.counters[safe_label] = number
         marker = f"[[{safe_label}_{number:04d}]]"
         state.value_to_marker[key] = marker
-        state.marker_to_value[marker] = value
+        state.marker_to_value[marker] = display_value
+        state.marker_to_aliases[marker] = {value, canonical_value, display_value}
         return marker
 
     def sanitize_field(
@@ -80,9 +111,10 @@ class PrivacyGateway:
         spans: list[EntitySpan] = []
         seen: set[tuple[int, int, str]] = set()
         for label, value, priority in known:
-            if len(value.strip()) < 3:
+            pattern = _known_value_pattern(value)
+            if pattern is None:
                 continue
-            for match in re.finditer(re.escape(value), text, flags=re.IGNORECASE):
+            for match in pattern.finditer(text):
                 key = (match.start(), match.end(), label)
                 if key in seen:
                     continue
@@ -124,12 +156,11 @@ class PrivacyGateway:
 
     @staticmethod
     def validate_outbound(text: str, state: MarkerState) -> None:
-        folded = text.casefold()
-        leaked = [
-            marker
-            for marker, value in state.marker_to_value.items()
-            if len(value.strip()) >= 3 and value.casefold() in folded
-        ]
+        leaked = []
+        for marker, value in state.marker_to_value.items():
+            candidates = state.marker_to_aliases.get(marker, {value})
+            if any(_contains_known_value(text, candidate) for candidate in candidates):
+                leaked.append(marker)
         if leaked:
             raise ValueError("Outbound validation found a known unmarked value")
 
