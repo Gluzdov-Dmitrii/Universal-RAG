@@ -88,6 +88,24 @@ def _bridge_config(tmp_path):
     return config
 
 
+def _config_with_agent_workspace(tmp_path):
+    base = load_config()
+    workspace = (tmp_path / "agent-workspace").resolve()
+    workspace.mkdir()
+    (workspace / "instructions.md").write_text("trusted instructions", encoding="utf-8")
+    config = replace(
+        base,
+        paths=replace(base.paths, runtime_root=(tmp_path / "runtime").resolve()),
+        generation=replace(
+            base.generation,
+            agent_workspace_root=workspace,
+            instruction_files=("instructions.md",),
+        ),
+    )
+    config.ensure_runtime()
+    return config
+
+
 def test_bridge_ignores_known_value_occurring_only_in_trusted_prompt(tmp_path) -> None:
     config = _bridge_config(tmp_path)
     state = MarkerState()
@@ -221,12 +239,7 @@ def test_full_stub_flow_keeps_raw_values_out_of_codex_file(tmp_path) -> None:
 
 
 def test_provider_controlled_link_is_restored_only_to_plain_text(tmp_path, monkeypatch) -> None:
-    base = load_config()
-    config = replace(
-        base,
-        paths=replace(base.paths, runtime_root=(tmp_path / "runtime").resolve()),
-    )
-    config.ensure_runtime()
+    config = _config_with_agent_workspace(tmp_path)
     gateway = PrivacyGateway(EnsembleDetector([LiteralDetector()]))
 
     def malicious_answer(self, payload: str, request_id: str) -> str:
@@ -270,16 +283,11 @@ def test_auto_falls_back_to_local_stub_without_api_key(
     assert result.restored_output.exists()
     manifest = json.loads((result.request_dir / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["provider_boundary"] == "local-deterministic"
-    assert manifest["pilot_auto_send"] is False
+    assert manifest["automatic_send"] is False
 
 
 def test_responses_provider_is_automatic_and_demarks_response(tmp_path, monkeypatch) -> None:
-    base = load_config()
-    config = replace(
-        base,
-        paths=replace(base.paths, runtime_root=(tmp_path / "runtime").resolve()),
-    )
-    config.ensure_runtime()
+    config = _config_with_agent_workspace(tmp_path)
     gateway = PrivacyGateway(EnsembleDetector([RegexDetector(), LiteralDetector()]))
 
     def fake_answer(self, payload: str, request_id: str) -> str:
@@ -298,7 +306,7 @@ def test_responses_provider_is_automatic_and_demarks_response(tmp_path, monkeypa
 
     assert "Анну Смирнову" in result.restored_output.read_text(encoding="utf-8")
     manifest = json.loads((result.request_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert manifest["pilot_auto_send"] is True
+    assert manifest["automatic_send"] is True
     assert manifest["human_review_required"] is False
     assert manifest["provider_boundary"] == "no-tools-api"
 
@@ -307,12 +315,7 @@ def test_provider_response_can_be_restored_after_ui_interrupt(tmp_path, monkeypa
     class SyntheticUiInterrupt(BaseException):
         pass
 
-    base = load_config()
-    config = replace(
-        base,
-        paths=replace(base.paths, runtime_root=(tmp_path / "runtime").resolve()),
-    )
-    config.ensure_runtime()
+    config = _config_with_agent_workspace(tmp_path)
     gateway = PrivacyGateway(EnsembleDetector([RegexDetector(), LiteralDetector()]))
 
     def fake_answer(self, payload: str, request_id: str) -> str:

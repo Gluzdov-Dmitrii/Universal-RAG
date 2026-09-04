@@ -11,7 +11,7 @@ alwaysApply: true
   `domain`.
 - Keep provider contracts and selection in `llm/contracts.py` and `llm/factory.py`; place
   concrete cloud, Codex, stub, and local-model integrations under `llm/adapters`.
-- Treat `llm-workspaces/rag-test` as the canonical deployable user-agent component; update the
+- Treat `llm-workspaces/universal-rag-agent` as the canonical deployable provider-agent component; update the
   template first and deploy managed copies with `scripts/sync-rag-agent-workspace.ps1`.
 - Instantiate concrete components only in `composition.py` or an API composition root.
 - Use `AppConfig` path properties and keep runtime artifacts grouped under `data`, `state`,

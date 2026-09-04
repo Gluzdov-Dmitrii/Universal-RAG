@@ -163,7 +163,7 @@ def test_codex_local_keeps_iterations_in_one_project_thread_when_configured(
     monkeypatch.setenv("SECURE_RAG_ALLOW_UNSAFE_CODEX_LOCAL", "1")
     monkeypatch.setenv("SECURE_RAG_CODEX_PERSIST_THREADS", "1")
 
-    project_root = (tmp_path / "RAG Test").resolve()
+    project_root = (tmp_path / "Universal RAG Agent").resolve()
     project_root.mkdir()
     provider = LocalCodexProvider(project_root=project_root)
     answer = provider.answer_payload(

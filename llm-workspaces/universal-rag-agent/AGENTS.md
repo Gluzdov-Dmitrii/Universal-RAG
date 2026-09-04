@@ -1,4 +1,4 @@
-# RAG Test agent instructions
+# Universal RAG agent instructions
 
 This is a client instruction workspace, not the Secure RAG backend or a filesystem security
 boundary.

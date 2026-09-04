@@ -1,3 +1,3 @@
-"""Secure local RAG learning prototype."""
+"""Universal RAG application package."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

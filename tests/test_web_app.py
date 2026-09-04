@@ -3,357 +3,155 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-from streamlit.testing.v1 import AppTest
+from fastapi.testclient import TestClient
 
-import secure_rag.api.web as web_app
-
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-WEB_APP_PATH = PROJECT_ROOT / "src" / "secure_rag" / "api" / "web.py"
+from secure_rag.api import web
+from secure_rag.domain.models import CitationLocation, DocumentSource
 
 
-def _copy_config(tmp_path: Path) -> Path:
-    config_path = tmp_path / "config" / "pilot.yaml"
-    config_path.parent.mkdir()
-    config_path.write_bytes((PROJECT_ROOT / "config" / "pilot.yaml").read_bytes())
-    return config_path
+def _client(monkeypatch) -> TestClient:
+    monkeypatch.setenv("SECURE_RAG_API_KEY", "test-backend-key")
+    return TestClient(web.app)
 
 
-def _clear_resource_caches() -> None:
-    web_app.cached_embedder.clear()
-    web_app.cached_gateway.clear()
-    web_app.cached_extracted_text.clear()
+def _headers() -> dict[str, str]:
+    return {"Authorization": "Bearer test-backend-key"}
 
 
-def test_config_snapshot_retries_until_hash_matches_loaded_file(monkeypatch) -> None:
-    first_config = object()
-    stable_config = object()
-    hashes = iter(("before-change", "after-change", "stable", "stable"))
-    configs = iter((first_config, stable_config))
-    load_calls = 0
-
-    monkeypatch.setattr(web_app, "_config_content_hash", lambda _path: next(hashes))
-
-    def counted_load(_path):
-        nonlocal load_calls
-        load_calls += 1
-        return next(configs)
-
-    monkeypatch.setattr(web_app, "load_config", counted_load)
-
-    config, config_hash = web_app._load_config_snapshot("pilot.yaml")
-
-    assert config is stable_config
-    assert config_hash == "stable"
-    assert load_calls == 2
-
-
-def test_relative_web_config_resolves_from_repository_after_api_move() -> None:
-    config, config_hash = web_app._load_config_snapshot("config/pilot.yaml")
-
-    assert config.repo_root == PROJECT_ROOT
-    assert config_hash == web_app._config_content_hash(
-        str(PROJECT_ROOT / "config" / "pilot.yaml")
+def _result(tmp_path: Path, answer: str = "Готовый ответ"):
+    restored = tmp_path / "restored.txt"
+    restored.write_text(answer, encoding="utf-8")
+    return SimpleNamespace(
+        restored_output=restored,
+        sources=(
+            DocumentSource(
+                citation_refs=("R001",),
+                document_id="opaque-document-id",
+                path=Path(r"D:\Nextcloud\Проекты\расчёт.xlsx"),
+                file_type="xlsx",
+                best_score=0.9,
+                locations=(
+                    CitationLocation(
+                        citation_ref="R001",
+                        kind="sheet",
+                        start="Расчёты",
+                    ),
+                ),
+            ),
+        ),
     )
 
 
-def test_resource_caches_invalidate_when_config_contents_change(
-    tmp_path, monkeypatch
-) -> None:
-    config_path = _copy_config(tmp_path)
-    created_embedders: list[object] = []
-    created_gateways: list[object] = []
-    embedder_configs: list[object] = []
-    gateway_configs: list[object] = []
+def test_health_does_not_load_models_or_require_auth(monkeypatch) -> None:
+    monkeypatch.delenv("SECURE_RAG_API_KEY", raising=False)
 
-    class GatewayResource:
-        @staticmethod
-        def mark_literal(value, _label, state):
-            marker = "[[PER_0001]]"
-            state.marker_to_aliases.setdefault(marker, set()).add(value)
-            return marker
+    response = TestClient(web.app).get("/healthz")
 
-    def create_embedder(config):
-        embedder_configs.append(config)
-        resource = object()
-        created_embedders.append(resource)
-        return resource
-
-    def create_gateway(config, *, mode):
-        assert mode == "regex"
-        gateway_configs.append(config)
-        resource = GatewayResource()
-        created_gateways.append(resource)
-        return resource
-
-    monkeypatch.setattr(web_app, "create_embedder", create_embedder)
-    monkeypatch.setattr(web_app, "create_gateway", create_gateway)
-    _clear_resource_caches()
-    try:
-        first_config, first_hash = web_app._load_config_snapshot(str(config_path))
-        first_embedder = web_app.cached_embedder(
-            str(config_path), first_hash, first_config
-        )
-        first_gateway = web_app.cached_gateway(
-            str(config_path),
-            first_hash,
-            web_app._gateway_content_hash(),
-            "regex",
-            first_config,
-        )
-        first_text_cache = web_app.cached_extracted_text(
-            str(config_path), first_hash, first_config
-        )
-
-        assert (
-            web_app.cached_embedder(str(config_path), first_hash, first_config)
-            is first_embedder
-        )
-        assert (
-            web_app.cached_gateway(
-                str(config_path),
-                first_hash,
-                web_app._gateway_content_hash(),
-                "regex",
-                first_config,
-            )
-            is first_gateway
-        )
-        assert (
-            web_app.cached_extracted_text(str(config_path), first_hash, first_config)
-            is first_text_cache
-        )
-
-        config_path.write_bytes(config_path.read_bytes() + b"\n# cache key change\n")
-        changed_config, changed_hash = web_app._load_config_snapshot(str(config_path))
-        changed_embedder = web_app.cached_embedder(
-            str(config_path), changed_hash, changed_config
-        )
-        changed_gateway = web_app.cached_gateway(
-            str(config_path),
-            changed_hash,
-            web_app._gateway_content_hash(),
-            "regex",
-            changed_config,
-        )
-        changed_text_cache = web_app.cached_extracted_text(
-            str(config_path), changed_hash, changed_config
-        )
-
-        assert changed_hash != first_hash
-        assert changed_embedder is not first_embedder
-        assert changed_gateway is not first_gateway
-        assert changed_text_cache is not first_text_cache
-        assert created_embedders == [first_embedder, changed_embedder]
-        assert created_gateways == [first_gateway, changed_gateway]
-        assert embedder_configs == [first_config, changed_config]
-        assert gateway_configs == [first_config, changed_config]
-    finally:
-        _clear_resource_caches()
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "model": "universal-rag"}
 
 
-def test_run_question_reuses_supplied_config_snapshot(tmp_path, monkeypatch) -> None:
-    config_path = _copy_config(tmp_path)
-    config_snapshot = web_app._load_config_snapshot(str(config_path))
-    config, config_hash = config_snapshot
-    embedder = SimpleNamespace(dimension=8)
-    gateway = object()
-    text_cache = object()
-    manifest = SimpleNamespace(closed=False)
-    store = SimpleNamespace(closed=False)
-    observed_configs: list[object] = []
+def test_models_require_shared_backend_key(monkeypatch) -> None:
+    client = _client(monkeypatch)
 
-    def unexpected_reload(_path):
-        raise AssertionError("a request must reuse its already-loaded config")
+    assert client.get("/v1/models").status_code == 401
+    response = client.get("/v1/models", headers=_headers())
 
-    def cached_embedder(path, digest, supplied_config):
-        assert path == str(config_path)
-        assert digest == config_hash
-        observed_configs.append(supplied_config)
-        return embedder
-
-    def cached_gateway(path, digest, implementation_hash, mode, supplied_config):
-        assert path == str(config_path)
-        assert digest == config_hash
-        assert implementation_hash == web_app._gateway_content_hash()
-        assert mode == "regex"
-        observed_configs.append(supplied_config)
-        return gateway
-
-    def cached_extracted_text(path, digest, supplied_config):
-        assert path == str(config_path)
-        assert digest == config_hash
-        observed_configs.append(supplied_config)
-        return text_cache
-
-    def create_store(supplied_config, dimension):
-        assert supplied_config is config
-        assert dimension == embedder.dimension
-        store.close = lambda: setattr(store, "closed", True)
-        return store
-
-    def create_manifest(path):
-        assert path == config.manifest_path
-        manifest.close = lambda: setattr(manifest, "closed", True)
-        return manifest
-
-    def create_retriever(
-        supplied_config,
-        supplied_embedder,
-        supplied_manifest,
-        supplied_store,
-        *,
-        extracted_cache,
-    ):
-        assert supplied_config is config
-        assert supplied_embedder is embedder
-        assert supplied_manifest is manifest
-        assert supplied_store is store
-        assert extracted_cache is text_cache
-        return object()
-
-    expected_result = object()
-
-    class Pipeline:
-        def __init__(self, supplied_config, retriever, supplied_gateway, supplied_manifest):
-            assert supplied_config is config
-            assert retriever is not None
-            assert supplied_gateway is gateway
-            assert supplied_manifest is manifest
-
-        def run(self, question, *, provider, attachment_path, on_event):
-            assert question == "test question"
-            assert provider == "stub"
-            assert attachment_path is None
-            assert on_event is None
-            return expected_result
-
-    monkeypatch.setattr(web_app, "_load_config_snapshot", unexpected_reload)
-    monkeypatch.setattr(web_app, "cached_embedder", cached_embedder)
-    monkeypatch.setattr(web_app, "cached_gateway", cached_gateway)
-    monkeypatch.setattr(web_app, "cached_extracted_text", cached_extracted_text)
-    monkeypatch.setattr(web_app, "ManifestStore", create_manifest)
-    monkeypatch.setattr(web_app, "create_vector_store", create_store)
-    monkeypatch.setattr(web_app, "Retriever", create_retriever)
-    monkeypatch.setattr(web_app, "SecureRagPipeline", Pipeline)
-
-    result = web_app.run_question(
-        str(config_path),
-        "test question",
-        "stub",
-        "regex",
-        "",
-        config_snapshot=config_snapshot,
-    )
-
-    assert result is expected_result
-    assert observed_configs == [config, config, config]
-    assert manifest.closed
-    assert store.closed
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["data"]] == ["universal-rag"]
 
 
-def test_app_form_preserves_question_and_keeps_single_neutral_submit_control(
+def test_completion_uses_latest_user_message_and_returns_plain_text_sources(
     tmp_path,
     monkeypatch,
 ) -> None:
-    monkeypatch.setenv("SECURE_RAG_CONFIG", str(tmp_path / "missing-pilot.yaml"))
-    app = AppTest.from_file(str(WEB_APP_PATH), default_timeout=10).run()
+    client = _client(monkeypatch)
+    questions: list[str] = []
 
-    assert not app.exception
-    assert [button.label for button in app.button] == ["Отправить"]
-    form = next(child for child in app.main.children.values() if child.type == "form")
-    assert not form.proto.form.clear_on_submit
-    assert len(app.text_input) == 1
-    placeholder = app.text_input[0].placeholder
-    assert "RAG TEST" not in placeholder
-    assert "D:" not in placeholder
+    def run(question: str):
+        questions.append(question)
+        return _result(tmp_path, '**private**\n<img src="https://example.test/leak">')
 
-    question = "Нужно сохранить этот вопрос после ошибки"
-    app.text_area[0].set_value(question)
-    app.text_input[0].set_value("папка/документ.docx")
-    app.button[0].click().run()
+    monkeypatch.setattr(web.runtime, "run", run)
+    response = client.post(
+        "/v1/chat/completions",
+        headers=_headers(),
+        json={
+            "model": "universal-rag",
+            "messages": [
+                {"role": "user", "content": "старый вопрос"},
+                {"role": "assistant", "content": "старый ответ"},
+                {"role": "user", "content": "текущий вопрос"},
+            ],
+        },
+    )
 
-    assert not app.exception
-    assert app.text_area[0].value == question
-    assert any("FileNotFoundError" in error.value for error in app.error)
-
-
-def test_app_renders_provider_answer_as_plain_text() -> None:
-    answer = '**private**\n<img src="https://example.test/leak">'
-    app = AppTest.from_file(str(WEB_APP_PATH), default_timeout=10).run()
-    original_question = "Исходный вопрос для продолжения диалога"
-    app.session_state["question"] = original_question
-    app.session_state["last_run"] = {
-        "answer": answer,
-        "request_id": "request-id",
-        "retrieved_count": 1,
-        "marker_count": 2,
-        "provider": "stub",
-        "codex_input": "",
-        "event_log": "",
-        "events": [],
-        "total_ms": 1.0,
-    }
-
-    app.run()
-
-    assert not app.exception
-    assert [button.label for button in app.button] == ["Отправить"]
-    assert app.text_area[0].value == original_question
-    assert [(code.value, code.language) for code in app.code] == [
-        (answer, "plaintext")
-    ]
-    assert all(answer not in markdown.value for markdown in app.markdown)
+    assert response.status_code == 200
+    assert questions == ["текущий вопрос"]
+    content = response.json()["choices"][0]["message"]["content"]
+    assert content.startswith("    **private**")
+    assert '    <img src="https://example.test/leak">' in content
+    assert "Источники на сервере:" in content
+    assert r"R001 · xlsx · лист Расчёты · D:\Nextcloud\Проекты\расчёт.xlsx" in content
 
 
-def test_app_renders_local_source_paths_separately_from_answer() -> None:
-    app = AppTest.from_file(str(WEB_APP_PATH), default_timeout=10).run()
-    app.session_state["last_run"] = {
-        "answer": "plain answer with R001",
-        "request_id": "request-id",
-        "retrieved_count": 1,
-        "marker_count": 0,
-        "provider": "stub",
-        "iterations": 1,
-        "sources": [
-            {
-                "citation_refs": ["R001"],
-                "path": r"D:\RAG TEST\folder\document.xlsx",
-                "file_type": "xlsx",
-                "best_score": 0.9,
-                "locations": [
-                    {
-                        "citation_ref": "R001",
-                        "kind": "sheet",
-                        "start": "Расчёты",
-                        "end": None,
-                    }
-                ],
-            },
-            {
-                "citation_refs": ["R002"],
-                "path": r"D:\RAG TEST\folder\report.docx",
-                "file_type": "docx",
-                "best_score": 0.8,
-                "locations": [
-                    {
-                        "citation_ref": "R002",
-                        "kind": "approx_page",
-                        "start": "7",
-                        "end": None,
-                    }
-                ],
-            },
-        ],
-        "sources_path": r"C:\runtime\request\sources.json",
-        "codex_input": "",
-        "event_log": "",
-        "events": [],
-        "total_ms": 1.0,
-    }
+def test_streaming_completion_uses_openai_sse_shape(tmp_path, monkeypatch) -> None:
+    client = _client(monkeypatch)
+    monkeypatch.setattr(web.runtime, "run", lambda _question: _result(tmp_path))
 
-    app.run()
+    response = client.post(
+        "/v1/chat/completions",
+        headers=_headers(),
+        json={
+            "model": "universal-rag",
+            "stream": True,
+            "messages": [{"role": "user", "content": "вопрос"}],
+        },
+    )
 
-    values = [code.value for code in app.code]
-    assert "plain answer with R001" in values
-    assert r"R001 · xlsx · лист Расчёты · D:\RAG TEST\folder\document.xlsx" in values
-    assert r"R002 · docx · примерно стр. 7 · D:\RAG TEST\folder\report.docx" in values
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert '"object": "chat.completion.chunk"' in response.text
+    assert "data: [DONE]" in response.text
+
+
+def test_completion_rejects_unknown_model_and_missing_user_message(monkeypatch) -> None:
+    client = _client(monkeypatch)
+
+    unknown = client.post(
+        "/v1/chat/completions",
+        headers=_headers(),
+        json={"model": "other", "messages": [{"role": "user", "content": "x"}]},
+    )
+    missing_user = client.post(
+        "/v1/chat/completions",
+        headers=_headers(),
+        json={
+            "model": "universal-rag",
+            "messages": [{"role": "system", "content": "instructions"}],
+        },
+    )
+
+    assert unknown.status_code == 404
+    assert missing_user.status_code == 400
+
+
+def test_pipeline_failure_does_not_expose_exception_text(monkeypatch) -> None:
+    client = _client(monkeypatch)
+
+    def fail(_question: str):
+        raise RuntimeError(r"secret from D:\Nextcloud\private.docx")
+
+    monkeypatch.setattr(web.runtime, "run", fail)
+    response = client.post(
+        "/v1/chat/completions",
+        headers=_headers(),
+        json={
+            "model": "universal-rag",
+            "messages": [{"role": "user", "content": "вопрос"}],
+        },
+    )
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "pipeline_failed"}
+    assert "private.docx" not in response.text

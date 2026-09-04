@@ -48,7 +48,7 @@ def chunk_text(
     chunk_chars: int,
     overlap_chars: int,
     min_chunk_chars: int,
-    access_group: str = "pilot",
+    access_group: str = "employees",
     text_locations: tuple[TextLocation, ...] = (),
 ) -> list[ChunkRecord]:
     if chunk_chars <= 0 or overlap_chars < 0 or overlap_chars >= chunk_chars:

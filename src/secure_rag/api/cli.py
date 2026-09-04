@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -18,7 +19,7 @@ from ..orchestration.pipeline import SecureRagPipeline
 from ..retrieval.service import Retriever
 
 _SAFE_ERROR_CODE_RE = re.compile(r"^[a-z0-9_]{1,80}$")
-WEB_APP_PATH = Path(__file__).with_name("web.py")
+WEB_API_IMPORT = "secure_rag.api.web:app"
 
 
 def _safe_print(value: dict[str, object]) -> None:
@@ -166,7 +167,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="secure-rag",
         description="Local RAG → sanitizer → Codex file bridge → demarker",
     )
-    parser.add_argument("--config", default=None, help="Path to pilot.yaml")
+    parser.add_argument("--config", default=None, help="Path to app.yaml")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     subparsers.add_parser("doctor", help="Check paths and local manifest without loading models")
@@ -228,7 +229,19 @@ def build_parser() -> argparse.ArgumentParser:
     demark_parser.add_argument("request_id")
     demark_parser.add_argument("--input", type=Path, default=None)
 
-    subparsers.add_parser("serve", help="Start the local Streamlit chat")
+    serve_parser = subparsers.add_parser(
+        "serve",
+        help="Start the OpenAI-compatible API used by Open WebUI",
+    )
+    serve_parser.add_argument(
+        "--host",
+        default=os.getenv("SECURE_RAG_API_HOST", "127.0.0.1"),
+    )
+    serve_parser.add_argument(
+        "--port",
+        type=int,
+        default=int(os.getenv("SECURE_RAG_API_PORT", "8000")),
+    )
     return parser
 
 
@@ -269,11 +282,12 @@ def main(argv: list[str] | None = None) -> int:
                 [
                     sys.executable,
                     "-m",
-                    "streamlit",
-                    "run",
-                    str(WEB_APP_PATH),
-                    "--server.address",
-                    "127.0.0.1",
+                    "uvicorn",
+                    WEB_API_IMPORT,
+                    "--host",
+                    args.host,
+                    "--port",
+                    str(args.port),
                 ]
             )
     except Exception as exc:

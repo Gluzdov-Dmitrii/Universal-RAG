@@ -3,14 +3,14 @@ param(
     [ValidateSet("Push", "Check")]
     [string]$Mode = "Push",
 
-    [string]$TargetRoot = "C:\Dev\LLM\Codex_RAG_Test"
+    [string]$TargetRoot = "C:\Services\Universal-RAG-Agent"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
-$templateRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "llm-workspaces\rag-test"))
+$templateRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot "llm-workspaces\universal-rag-agent"))
 $target = [IO.Path]::GetFullPath($TargetRoot)
 $templatePrefix = $templateRoot.TrimEnd("\") + "\"
 $targetPrefix = $target.TrimEnd("\") + "\"

@@ -3,11 +3,11 @@
 This directory contains versioned, deployable client workspaces for LLM components. It does
 not contain model weights, runtime databases, source documents, or request artifacts.
 
-`rag-test/` is the canonical source for the user-facing Secure RAG agent. Deploy it with:
+`universal-rag-agent/` is the canonical source for the provider-side agent workspace. Deploy it with:
 
 ```powershell
 .\scripts\sync-rag-agent-workspace.ps1 -Mode Push `
-    -TargetRoot C:\Dev\LLM\Codex_RAG_Test
+    -TargetRoot C:\Services\Universal-RAG-Agent
 ```
 
 Use `-Mode Check` in CI or before a demo to detect drift. The sync operation overwrites only

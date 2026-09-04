@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "secure-rag"
-version = "0.1.0"
-description = "Local secure RAG learning prototype with Qdrant and reversible sanitization"
+version = "0.2.0"
+description = "Secure RAG service with Qdrant, reversible sanitization, and an OpenAI-compatible API"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -28,7 +28,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-web = ["streamlit>=1.49,<2"]
+web = [
+  "fastapi>=0.116,<1",
+  "uvicorn>=0.35,<1",
+]
 dev = ["pytest>=8.3,<10", "ruff>=0.12,<1"]
 
 [project.scripts]

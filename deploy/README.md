@@ -1,81 +1,115 @@
-# Qdrant server
+# Развёртывание
 
-Qdrant runs in Docker, while the Python/Streamlit application runs on Windows.
-Only the REST port is exposed and only on localhost. Vector data persists in the
-Docker named volume `secure_rag_qdrant_storage`.
+## Состав одного сервера
 
-## One-command local launcher
+| Компонент | Runtime | Порт | Данные |
+|---|---|---:|---|
+| Open WebUI `v0.11.1` | Docker | `0.0.0.0:3000` | volume `universal_rag_open_webui_data` |
+| Universal RAG API | Windows/Python | `0.0.0.0:8000` | `runtime/state`, `runtime/diagnostics` |
+| Qdrant `v1.19.0` | Docker | `127.0.0.1:6333` | volume `secure_rag_qdrant_storage` |
+| Manifest | SQLite | без порта | `runtime/data/manifest/documents.sqlite` |
+| Nextcloud corpus | Windows folder | без порта | путь из `SECURE_RAG_SOURCE_ROOT` |
 
-Run these commands from the repository root:
+В LAN публикуется только Open WebUI. API слушает host-интерфейс, чтобы Docker Desktop мог
+обращаться к `host.docker.internal:8000`, но защищён отдельным Bearer key. На сервере следует
+добавить Windows Firewall rule, разрешающую `3000/tcp` только корпоративным подсетям и
+запрещающую прямой клиентский доступ к `8000/tcp` и `6333/tcp`. Для постоянной эксплуатации
+перед Open WebUI нужен внутренний reverse proxy с HTTPS и WebSocket support.
+
+## Lifecycle
 
 ```powershell
-# Start Docker Desktop if necessary, start/health-check Qdrant, then start Streamlit.
 .\scripts\start-local.ps1
-
-# Show app/Qdrant health, tracked Streamlit PID and current log files.
 .\scripts\status-local.ps1
-
-# Stop only the native Streamlit process. Qdrant remains available.
 .\scripts\stop-local.ps1
-
-# Stop Streamlit and Qdrant, preserving the Docker named volume and vector index.
 .\scripts\stop-local.ps1 -StopQdrant
 ```
 
-The launcher is idempotent. It stores only process metadata in
-`runtime/run/pids/streamlit.json` and writes Streamlit stdout/stderr to timestamped files in
-`runtime/diagnostics/logs`. Before stopping a PID, the stop script verifies the executable and full
-Streamlit app path. A process on port 8501 that was not started by this launcher is
-reported but never stopped.
+`stop-local.ps1` сохраняет оба Docker volume и весь `runtime`. Никогда не используйте
+`docker compose down --volumes` в обычной эксплуатации.
 
-After a Windows restart, run `start-local.ps1` again. OS auto-start is intentionally not
-installed by this prototype; it can be added later as an explicit Task Scheduler step.
-Streamlit remains native on Windows because the current PyTorch/CUDA environment, local
-source path, marker vault and provider boundary are host concerns. Only Qdrant belongs in
-Docker at this stage.
+Open WebUI получает одну OpenAI-compatible connection:
 
-## Manual Qdrant control
-
-From the repository root:
-
-```powershell
-docker compose -f deploy/docker-compose.yml up -d
-docker compose -f deploy/docker-compose.yml ps
-Invoke-WebRequest -UseBasicParsing http://127.0.0.1:6333/readyz
+```text
+http://host.docker.internal:8000/v1
 ```
 
-Control commands:
+Её key берётся из `SECURE_RAG_API_KEY`. `WEBUI_SECRET_KEY` должен оставаться стабильным:
+его смена инвалидирует сессии и данные, зашифрованные Open WebUI.
 
-```powershell
-# Stop containers; keep the vector index.
-docker compose -f deploy/docker-compose.yml stop
+## Первый запуск
 
-# Start the existing containers again.
-docker compose -f deploy/docker-compose.yml start
+1. Создайте постоянный clone, например `C:\Services\Universal-RAG`.
+2. Установите Python 3.12, Docker Desktop и зависимости `.[web]`.
+3. Скопируйте `.env.example` в `.env`, задайте source root, URL и два разных random secret.
+4. Выполните `prepare-models`, полный `index`, затем `start-local.ps1`.
+5. Откройте `http://<server-ip>:3000` и создайте первый admin account.
+6. Создавайте пользователей/группы через admin panel; не включайте публичную регистрацию.
+7. Настройте backup вне Git и выполните тестовое восстановление.
 
-# Follow Qdrant service logs.
-docker compose -f deploy/docker-compose.yml logs -f --tail 100 qdrant
+### Переход с версии 0.1
 
-# Remove containers/network; keep the named volume.
-docker compose -f deploy/docker-compose.yml down
+`config/app.yaml` заменяет `config/pilot.yaml`, а новая collection называется
+`universal_rag_e5_v1` и использует access group `employees`. Локальный `.env` нужно перевести
+на `SECURE_RAG_CONFIG=config\app.yaml`, после чего выполнить полный `index --max-files 0`.
+Старая collection остаётся в Qdrant volume и не удаляется автоматически; удалять её можно
+только после snapshot и проверки нового индекса.
+
+## CI/CD
+
+`.github/workflows/ci.yml` выполняет проверки на GitHub-hosted Windows runner. Deployment после
+push в `main` выполняется только runner-ом с labels:
+
+```text
+self-hosted, Windows, X64, universal-rag
 ```
 
-Do not add `--volumes` to `docker compose down` unless you intentionally want to
-delete the complete server index. `restart: unless-stopped` restarts Qdrant after
-Docker Desktop starts, except when the service was explicitly stopped.
+На Windows service account runner-а задайте системную переменную:
 
-The default `config/pilot.yaml` targets this server. Server vectors live only in the Docker
-named volume; `runtime/data/qdrant` is created only if embedded mode is explicitly selected.
-The Qdrant target is part of the index signature, so switching backends safely re-embeds
-documents instead of incorrectly skipping them.
+```powershell
+[Environment]::SetEnvironmentVariable(
+    "UNIVERSAL_RAG_DEPLOY_ROOT",
+    "C:\Services\Universal-RAG",
+    "Machine"
+)
+```
 
-For a future remote server, set `SECURE_RAG_QDRANT_URL` and keep the API key only in
-`SECURE_RAG_QDRANT_API_KEY`; never commit it. Localhost mode intentionally has no API
-key because the port is not reachable from other machines.
+Перезапустите runner service после изменения переменной. У service account должны быть права
+на clone, `.venv`, Docker Desktop/Engine и runtime, но только read-доступ к разрешённой
+Nextcloud-копии. Развёртывание делает `git fetch` + `merge --ff-only`, устанавливает Python
+dependencies, обновляет закреплённые container images и перезапускает UI/API. Dirty working
+tree или non-fast-forward останавливают deployment.
 
-Client and per-write timeout defaults to 60 seconds. A write is attempted at most three
-times with a 0.25-second initial backoff. Configure these operational values in
-`config/pilot.yaml` or with `SECURE_RAG_QDRANT_TIMEOUT_SECONDS`,
-`SECURE_RAG_QDRANT_WRITE_MAX_ATTEMPTS` and
-`SECURE_RAG_QDRANT_RETRY_BACKOFF_SECONDS`. They deliberately do not affect the index
-signature because they do not change vector contents or retrieval semantics.
+После ручной проверки runner-а создайте GitHub repository variable
+`ENABLE_INTERNAL_DEPLOY=true`. Пока переменной нет, job `deploy` пропускается и push запускает
+только CI.
+
+GitHub Environment `internal-production` рекомендуется защитить required reviewer-ом, пока
+нет автоматического smoke test и rollback. Первый deployment выполняется вручную, чтобы
+создать `.env`, runtime и зарегистрировать runner; после этого работает pull-based CD.
+
+## Обновление и rollback
+
+Перед обновлением создайте snapshot состояния. После CI:
+
+```powershell
+.\scripts\deploy-host.ps1
+```
+
+Rollback к старому коду допускается только если release notes подтверждают совместимость
+SQLite schema, Qdrant index signature и Open WebUI database. Для Open WebUI нельзя подключать
+pre-release и stable image к одному volume. При несовместимой миграции сначала восстановите
+соответствующий state snapshot, затем переключайте Git revision.
+
+## Следующие production-шаги
+
+- внутренний DNS + TLS certificate + reverse proxy;
+- SSO/OIDC и сопоставление Open WebUI user/group с document ACL;
+- service account вместо интерактивного Windows-пользователя;
+- scheduled Nextcloud sync/index job с single-writer lock;
+- централизованные метрики и backup retention;
+- отдельный Label Studio stack с PostgreSQL и object storage.
+
+Официальные ориентиры: [Open WebUI Docker deployment](https://docs.openwebui.com/getting-started/quick-start/),
+[hardening](https://docs.openwebui.com/getting-started/advanced-topics/hardening/) и
+[monitoring](https://docs.openwebui.com/reference/monitoring/).

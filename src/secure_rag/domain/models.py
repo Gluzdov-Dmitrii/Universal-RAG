@@ -44,7 +44,7 @@ class ChunkRecord:
     start: int
     end: int
     text: str
-    access_group: str = "pilot"
+    access_group: str = "employees"
     goz: bool = False
     is_final: bool = True
     location_kind: str = ""

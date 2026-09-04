@@ -32,7 +32,7 @@ def compute_index_signature(config: AppConfig, embedding_version: str) -> str:
         "access_group": config.retrieval.access_group,
         "goz": False,
         "is_final": True,
-        # Manifest is shared by the pilot backends. This target identity forces a
+        # Manifest may be shared by multiple storage profiles. This target identity forces a
         # re-index when moving from embedded storage to another Qdrant server.
         "qdrant_target": qdrant_target,
     }

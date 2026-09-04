@@ -5,8 +5,9 @@
 
 ## Границы пакета
 
-- `api`: принимает ввод и отображает результат; собирает зависимости через `composition`.
-- `orchestration`: координирует use case, но не знает деталей Streamlit/CLI.
+- `api`: предоставляет CLI и OpenAI-совместимый HTTP transport; собирает зависимости через
+  `composition`.
+- `orchestration`: координирует use case, но не знает деталей Open WebUI/FastAPI/CLI.
 - `ingestion`: офлайн-инвентаризация, extraction, chunking, manifest и синхронизация индекса.
 - `retrieval`: локальный query embedding, Qdrant search, перечитывание исходника и attachments.
 - `sanitization`: detectors, overlap resolution, canonical markers и strict demarking.
@@ -18,7 +19,7 @@
 - `config.py`: типизированная конфигурация; `composition.py`: создание concrete adapters.
 
 Зависимости направлены от delivery к use cases и далее к специализированным слоям. Domain не
-импортирует другие слои. Нельзя переносить Streamlit, argparse, OpenAI SDK или Qdrant client в
+импортирует другие слои. Нельзя переносить FastAPI, argparse, OpenAI SDK или Qdrant client в
 `domain`/`orchestration`. Новые внешние системы получают отдельный adapter; каталоги
 `connectors` и `tools` появятся только вместе с первой реальной реализацией.
 
@@ -66,8 +67,8 @@ revision, index signature, manifest chunks и Qdrant points. Удаление un
 явного `--prune-missing` после полного authoritative scan.
 
 Persistent extracted-text cache выключен по умолчанию: его включение создаёт вторую копию
-чувствительного текста и требует retention/encryption policy. Web использует отдельный
-ограниченный RAM cache и всё равно проверяет SHA-256 исходника.
+чувствительного текста и требует retention/encryption policy. API использует отдельный
+ограниченный process-memory cache и всё равно проверяет SHA-256 исходника.
 
 ## Online flow
 
@@ -88,7 +89,7 @@ raw local question
   → strict marker and leak validation
   → durable sanitized response staging
   → local demarking
-  → local citation-to-path mapping for UI/CLI
+  → local citation-to-path mapping for Open WebUI/CLI
 ```
 
 Query не маркируется до retrieval: embedding и поиск локальны, а ранняя замена сущностей
@@ -101,8 +102,17 @@ markers запрещены, а cosine similarity не позволяет rewrite
 вопроса. Расширять соседние chunks можно только для citation, уже прошедшего policy filter.
 В persistent `codex-local` режиме один request соответствует одному Codex thread, и все его
 retrieval-итерации продолжают этот thread. Thread запускается с точным `cwd` отдельного
-`llm.agent_workspace_root`, благодаря чему Codex Desktop относит его к проекту `RAG Test`;
+`llm.agent_workspace_root`;
 разные requests не разделяют историю и marker namespace.
+
+Open WebUI обращается к backend через Bearer-authenticated OpenAI-compatible API. Он хранит
+пользователей, группы, model visibility и историю в собственном persistent volume. Open WebUI
+не получает Qdrant/SQLite/Nextcloud credentials. Текущий adapter использует последнее user
+message и не передаёт предыдущие восстановленные ответы provider-у. Перед использованием
+истории как model context требуется request-scoped повторная sanitization всего диалога.
+Передаваемые Open WebUI identity headers пока не участвуют в retrieval policy: первая серверная
+конфигурация использует общий access group `employees`. Дифференцированный доступ нельзя
+включать до реализации и тестирования identity-to-ACL mapping.
 
 Внешняя LLM видит `file_type` и opaque `Rxxx`, но не filename/path. Для `xls/xlsx/csv` prompt
 разрешает запросить соседние chunks, если не хватает заголовков или строк. Реальные абсолютные
@@ -132,6 +142,8 @@ Indexer сохраняет chunk location и в SQLite manifest, и в Qdrant pa
 10. Технические события и ошибки не содержат вопрос, raw path или значения сущностей.
 11. Provider-controlled retrieval ограничен ACL исходного запроса, schema/size limits,
     semantic anchor и max iterations/contexts.
+12. Open WebUI backend key не выдаётся пользователям; прямой доступ к API/Qdrant блокируется
+    сетевой политикой сервера.
 
 Baseline NER не доказывает отсутствие false negatives. До коммерческих данных нужен
 размеченный security set с canary в query, chunk, filename, metadata и errors, измерение recall
@@ -157,20 +169,21 @@ chunking, embedding model revision и релевантную конфигура�
 компонентов требует version bump/signature change.
 
 Текущий dense baseline — `intfloat/multilingual-e5-small`, 384 dimensions, окно до 512
-токенов и обязательные `query:`/`passage:` prefixes. Legal NER и Collection3 остаются pilot
-кандидатами и должны пройти внутреннюю валидацию. Обучение доменного NER развивается отдельно
+токенов и обязательные `query:`/`passage:` prefixes. Legal NER и Collection3 должны пройти
+внутреннюю валидацию. Обучение доменного NER развивается отдельно
 в `../ft-bert`; этот репозиторий потребляет только одобренный artifact.
 
 ## Что ещё не реализовано из целевой схемы
 
-- trusted ACL/ГОЗ/final-version connectors;
-- Bitrix/1C/Nextcloud adapters и multi-user session isolation;
+- trusted ACL/ГОЗ/final-version connectors и identity-to-ACL mapping;
+- Nextcloud/WebDAV change-feed adapter вместо scan синхронизированной папки;
+- Bitrix/1C adapters;
 - encrypted Marker Vault и per-user workspaces;
 - hybrid BM25 + dense + RRF + reranker;
 - LangGraph workflow с типизированными retrieval tools вместо текущего prompt protocol;
 - allowlisted local tool gateway;
 - versioned Qdrant collections с atomic alias switch;
-- monitoring экономического эффекта, backup/restore и production rollout.
+- monitoring экономического эффекта и проверенный production rollout.
 
 Не добавляйте заглушечные packages под эти элементы: новый каталог должен иметь владельца,
 контракт, тест и реальный вызывающий поток.
@@ -187,12 +200,12 @@ Production-safe путь: backend загружает только перечис
 может читать его файлы; поэтому там допустимы только управляемые инструкции. Обычная Codex
 project task не считается privacy boundary.
 
-Каноническая версия компонента хранится в `llm-workspaces/rag-test/`. Каталог содержит только
+Каноническая версия компонента хранится в `llm-workspaces/universal-rag-agent/`. Каталог содержит только
 переносимые `AGENTS.md`, project agent, rule, skill и manifest управляемых файлов. Скрипт
 `scripts/sync-rag-agent-workspace.ps1` разворачивает их в отдельный Codex project и умеет
 fail-fast проверять drift. На inference-машине target path задаётся независимо от repository;
 backend и LLM workspace могут находиться на разных виртуальных или физических машинах и
 связываться через будущий узкий transport/tool gateway.
 
-Названия Codex-проектов отражают разные роли: `HF NER BERT LLM` используется для разработки,
-а `RAG Test` является экземпляром пользовательского LLM-компонента.
+Codex workspace остаётся отдельным управляемым LLM-компонентом и не используется как
+пользовательский интерфейс: эту роль выполняет Open WebUI.

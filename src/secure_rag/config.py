@@ -239,7 +239,7 @@ def _env_float(name: str, default: float) -> float:
 
 def load_config(config_path: str | Path | None = None) -> AppConfig:
     default_repo = Path(__file__).resolve().parents[2]
-    raw_path = config_path or os.getenv("SECURE_RAG_CONFIG", "config/pilot.yaml")
+    raw_path = config_path or os.getenv("SECURE_RAG_CONFIG", "config/app.yaml")
     path = Path(raw_path)
     if not path.is_absolute():
         path = default_repo / path

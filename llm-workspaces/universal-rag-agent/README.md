@@ -1,4 +1,4 @@
-# RAG Test agent workspace
+# Universal RAG agent workspace
 
 This directory is a deployed copy of the versioned Secure RAG user-agent component. It contains
 only agent instructions and no Secure RAG implementation, runtime database, vector storage, or
@@ -12,7 +12,7 @@ Managed behavior is defined in:
 - `.cursor/agents/rag-answerer.md`
 
 The canonical template belongs to the secure-rag repository under
-`llm-workspaces/rag-test/`. Deploy or verify this copy with
+`llm-workspaces/universal-rag-agent/`. Deploy or verify this copy with
 `scripts/sync-rag-agent-workspace.ps1` from that repository.
 
 The project directory is an instruction and organization boundary, not a filesystem security

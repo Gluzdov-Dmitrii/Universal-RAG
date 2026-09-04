@@ -8,7 +8,7 @@ from secure_rag.config import load_config
 
 def test_rag_agent_workspace_manifest_is_complete_and_safe() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    template_root = repo_root / "llm-workspaces" / "rag-test"
+    template_root = repo_root / "llm-workspaces" / "universal-rag-agent"
     manifest = json.loads(
         (template_root / ".rag-workspace-manifest.json").read_text(encoding="utf-8")
     )
@@ -32,7 +32,7 @@ def test_rag_agent_skill_is_concise_and_discoverable() -> None:
     skill_path = (
         Path(__file__).resolve().parents[1]
         / "llm-workspaces"
-        / "rag-test"
+        / "universal-rag-agent"
         / ".cursor"
         / "skills"
         / "answering-with-secure-rag"

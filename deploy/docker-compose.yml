@@ -16,6 +16,33 @@ services:
       start_period: 10s
     stop_grace_period: 30s
 
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:v0.11.1
+    restart: unless-stopped
+    ports:
+      - "${OPEN_WEBUI_BIND_ADDRESS:-0.0.0.0}:${OPEN_WEBUI_PORT:-3000}:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      WEBUI_AUTH: "true"
+      WEBUI_URL: "${OPEN_WEBUI_URL:-http://localhost:3000}"
+      WEBUI_SECRET_KEY: "${OPEN_WEBUI_SECRET_KEY:?Set OPEN_WEBUI_SECRET_KEY in .env}"
+      ENABLE_OPENAI_API: "true"
+      ENABLE_OPENAI_API_PASSTHROUGH: "false"
+      ENABLE_VALVE_ENCRYPTION: "true"
+      OPENAI_API_BASE_URL: "http://host.docker.internal:${SECURE_RAG_API_PORT:-8000}/v1"
+      OPENAI_API_KEY: "${SECURE_RAG_API_KEY:?Set SECURE_RAG_API_KEY in .env}"
+    volumes:
+      - open_webui_data:/app/backend/data
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
 volumes:
   qdrant_storage:
     name: secure_rag_qdrant_storage
+  open_webui_data:
+    name: universal_rag_open_webui_data

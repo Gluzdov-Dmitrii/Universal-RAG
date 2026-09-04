@@ -7,7 +7,7 @@ import re
 _WORD_RE = re.compile(r"[^\W\d_]+(?:[-'’][^\W\d_]+)?", flags=re.UNICODE)
 
 # These are deliberately conservative and cover the common Russian surname
-# inflections needed by the pilot. This is not intended to replace a full
+# inflections needed by the current Russian-language policy. This is not intended to replace a full
 # morphological analyzer or an entity linker.
 _SURNAME_HINTS = (
     "ов",
@@ -147,7 +147,7 @@ def _looks_like_surname(token: str) -> bool:
 def canonical_person_value(value: str) -> str:
     """Extract and normalize the surname from a PER span.
 
-    The current pilot intentionally uses surname-level identity. Full names,
+    The current policy intentionally uses surname-level identity. Full names,
     initials, and inflected forms therefore share one canonical marker. A
     later identity layer can preserve and resolve the other name components.
     """
@@ -171,7 +171,7 @@ def canonical_marker_value(label: str, value: str) -> str:
 def marker_display_value(label: str, value: str) -> str:
     """Choose the value written back for a newly created marker.
 
-    Bare surnames are returned in the pilot's canonical form. For a full PER
+    Bare surnames are returned in the policy's canonical form. For a full PER
     span we keep the original surface text for now; preserving and inflecting
     given names/patronymics belongs to the later FIO layer.
     """

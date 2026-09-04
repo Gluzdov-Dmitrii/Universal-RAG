@@ -88,7 +88,7 @@ def test_process_memory_cache_is_policy_keyed_and_strictly_bounded(tmp_path) -> 
     assert cache.load("1" * 32, revision, ".txt", changed_policy) is None
 
 
-def test_streamlit_style_ram_cache_avoids_extraction_without_disk_cache(
+def test_process_ram_cache_avoids_extraction_without_disk_cache(
     tmp_path, monkeypatch
 ) -> None:
     config = _test_config(tmp_path, persist_cache=False)

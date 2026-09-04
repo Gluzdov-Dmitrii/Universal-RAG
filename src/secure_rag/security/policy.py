@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class RetrievalPolicy:
-    """Fail-closed pilot policy applied inside vector search."""
+    """Fail-closed access policy applied inside vector search."""
 
     access_group: str
     goz: bool = False

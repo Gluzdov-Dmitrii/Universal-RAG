@@ -137,13 +137,13 @@ def test_index_signature_changes_with_extractor_policy(monkeypatch) -> None:
 
 
 def test_source_and_runtime_may_not_overlap(tmp_path) -> None:
-    default_path = Path(__file__).resolve().parents[1] / "config" / "pilot.yaml"
+    default_path = Path(__file__).resolve().parents[1] / "config" / "app.yaml"
     raw = yaml.safe_load(default_path.read_text(encoding="utf-8"))
     raw["paths"]["source_root"] = "source"
     raw["paths"]["runtime_root"] = "source/runtime"
     config_dir = tmp_path / "config"
     config_dir.mkdir()
-    path = config_dir / "pilot.yaml"
+    path = config_dir / "app.yaml"
     path.write_text(yaml.safe_dump(raw, allow_unicode=True), encoding="utf-8")
     with pytest.raises(ValueError, match="must not overlap"):
         load_config(path)

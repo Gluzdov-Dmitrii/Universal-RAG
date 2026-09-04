@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 
+from .. import __version__
 from ..config import AppConfig
 from ..domain.models import BridgeResult, MarkerState, RetrievalHit
 from ..ingestion.manifest import ManifestStore
@@ -104,7 +105,7 @@ class SecureRagPipeline:
         }
         max_iterations = self.config.retrieval.max_iterations if iterative_enabled else 1
         versions = {
-            "app": "0.1.0",
+            "app": __version__,
             "index_build_ids": ",".join(sorted({hit.build_id for hit in hits if hit.build_id}))
             or self.manifest.latest_build_id(),
             "embedding": self.retriever.embedder.model_version,

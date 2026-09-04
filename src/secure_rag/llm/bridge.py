@@ -141,7 +141,7 @@ class BridgeManager:
                 for item in contexts
             ],
             "human_review_required": provider == "manual",
-            "pilot_auto_send": provider in {"responses", "codex-local"},
+            "automatic_send": provider in {"responses", "codex-local"},
             "contains_unmasked_known_values": False,
             "security_claim": "known-detected-values-only; NER recall is not guaranteed",
             "provider_boundary": provider_boundary,

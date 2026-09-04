@@ -1,7 +1,9 @@
-schema_version: 1
+schema_version: 2
 
 paths:
-  source_root: "D:/RAG TEST"
+  # Override with SECURE_RAG_SOURCE_ROOT on each server. A Nextcloud Desktop
+  # synchronized folder is the first supported company deployment profile.
+  source_root: "C:/Data/Nextcloud"
   runtime_root: "runtime"
 
 ingestion:
@@ -36,7 +38,7 @@ embedding:
 
 qdrant:
   mode: "server"
-  collection_name: "secure_rag_pilot_e5_v1"
+  collection_name: "universal_rag_e5_v1"
   url: "http://127.0.0.1:6333"
   timeout_seconds: 60
   write_max_attempts: 3
@@ -44,7 +46,7 @@ qdrant:
 
 retrieval:
   top_k: 12
-  access_group: "pilot"
+  access_group: "employees"
   score_threshold: null
   hnsw_ef: 512
   exact_search: false
@@ -56,7 +58,7 @@ retrieval:
   adjacent_chunk_radius: 1
 
 llm:
-  agent_workspace_root: "C:/Dev/LLM/Codex_RAG_Test"
+  agent_workspace_root: "C:/Services/Universal-RAG-Agent"
   instruction_files:
     - ".cursor/rules/rag-assistant.mdc"
     - ".cursor/skills/answering-with-secure-rag/SKILL.md"

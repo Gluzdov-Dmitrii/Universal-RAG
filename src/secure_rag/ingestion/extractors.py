@@ -48,7 +48,7 @@ class ExtractedDocument:
 # OOXML files are ZIP containers. Libraries stream worksheet cells where possible, but
 # they still need to parse the archive directory and selected XML parts. These bounds
 # reject pathological containers before openpyxl/python-pptx see them. They intentionally
-# sit below the pilot's broad 200 MiB source-file cap.
+# sit below the configured broad source-file cap.
 _OOXML_MAX_ENTRIES = 10_000
 _OOXML_MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024
 _OOXML_MAX_MEMBER_BYTES = 256 * 1024 * 1024
