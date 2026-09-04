@@ -3,6 +3,8 @@ param(
     [Parameter(Mandatory)]
     [string]$DestinationRoot,
 
+    [string]$QdrantCollection,
+
     [switch]$IncludeOpenWebUI
 )
 
@@ -52,6 +54,7 @@ print(json.dumps({
 if ($LASTEXITCODE -ne 0) { throw "Configuration lookup failed." }
 $config = $configJson | ConvertFrom-Json
 if (-not $config.qdrant_url) { throw "State backup currently requires Qdrant server mode." }
+$collectionName = if ($QdrantCollection) { $QdrantCollection } else { [string]$config.collection }
 
 $manifestDestination = Join-Path $snapshotRoot "documents.sqlite"
 $backupCode = @'
@@ -72,7 +75,7 @@ $headers = @{}
 if ($env:SECURE_RAG_QDRANT_API_KEY) {
     $headers["api-key"] = $env:SECURE_RAG_QDRANT_API_KEY
 }
-$collection = [Uri]::EscapeDataString([string]$config.collection)
+$collection = [Uri]::EscapeDataString($collectionName)
 $snapshotResponse = Invoke-RestMethod -Method Post `
     -Uri "$($config.qdrant_url)/collections/$collection/snapshots" -Headers $headers
 $snapshotName = [string]$snapshotResponse.result.name
@@ -83,7 +86,7 @@ Invoke-WebRequest -UseBasicParsing `
     -Headers $headers -OutFile $qdrantDestination
 
 if ($IncludeOpenWebUI) {
-    & docker compose -f $composePath stop open-webui
+    & docker compose --env-file $localEnvironmentPath -f $composePath stop open-webui
     if ($LASTEXITCODE -ne 0) { throw "Could not stop Open WebUI for a consistent backup." }
     try {
         & docker run --rm `
@@ -93,7 +96,7 @@ if ($IncludeOpenWebUI) {
         if ($LASTEXITCODE -ne 0) { throw "Open WebUI volume backup failed." }
     }
     finally {
-        & docker compose -f $composePath up -d open-webui
+        & docker compose --env-file $localEnvironmentPath -f $composePath up -d open-webui
     }
 }
 
@@ -103,7 +106,7 @@ $metadata = [ordered]@{
     created_at = [DateTimeOffset]::Now.ToString("o")
     git_commit = $gitCommit
     config_schema = [int]$config.schema_version
-    qdrant_collection = [string]$config.collection
+    qdrant_collection = $collectionName
     qdrant_snapshot = $snapshotName
     manifest_file = "documents.sqlite"
     manifest_sha256 = $manifestHash

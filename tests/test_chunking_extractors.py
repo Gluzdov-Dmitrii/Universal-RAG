@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+import secure_rag.ingestion.extractors as extractors_module
 import secure_rag.ingestion.signatures as signatures_module
 from secure_rag.config import load_config
 from secure_rag.domain.models import TextLocation
@@ -101,6 +102,23 @@ def test_source_scan_excludes_generated_webhelp_indexes(tmp_path) -> None:
     discovered = list(iter_source_files(tmp_path, (".htm",)))
 
     assert discovered == [document.resolve()]
+
+
+def test_source_scan_skips_files_removed_during_nextcloud_walk(
+    tmp_path, monkeypatch
+) -> None:
+    removed = tmp_path / "removed.txt"
+    removed.write_text("placeholder", encoding="utf-8")
+    retained = tmp_path / "retained.txt"
+    retained.write_text("document", encoding="utf-8")
+
+    def changing_walk(*_args, **_kwargs):
+        removed.unlink()
+        yield str(tmp_path), [], [removed.name, retained.name]
+
+    monkeypatch.setattr(extractors_module.os, "walk", changing_walk)
+
+    assert list(iter_source_files(tmp_path, (".txt",))) == [retained.resolve()]
 
 
 def test_html_extractor_excludes_active_and_fallback_content(tmp_path) -> None:

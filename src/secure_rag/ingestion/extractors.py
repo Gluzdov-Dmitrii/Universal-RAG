@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import math
+import os
 import re
 import threading
 import warnings
@@ -568,23 +569,46 @@ def iter_source_files(
     if not root.is_dir():
         raise FileNotFoundError("Configured source root does not exist")
     supported = {item.lower() for item in supported_extensions}
-    yielded = 0
-    for candidate in sorted(root.rglob("*"), key=lambda item: str(item).casefold()):
+    candidates: list[Path] = []
+
+    # Nextcloud can remove placeholders while a scan is in progress. os.walk's
+    # onerror hook lets the inventory skip that directory and continue instead
+    # of aborting the entire build before the first document is processed.
+    for directory, directory_names, file_names in os.walk(
+        root,
+        topdown=True,
+        onerror=lambda _error: None,
+        followlinks=False,
+    ):
+        directory_names[:] = sorted(
+            (
+                name
+                for name in directory_names
+                if name.casefold() not in GENERATED_WEBHELP_DIRECTORIES
+            ),
+            key=str.casefold,
+        )
+        for file_name in sorted(file_names, key=str.casefold):
+            candidate = Path(directory, file_name)
+            try:
+                resolved = candidate.resolve(strict=True)
+                is_file = resolved.is_file()
+            except OSError:
+                continue
+            if not is_file or not resolved.is_relative_to(root):
+                continue
+            relative = resolved.relative_to(root)
+            if any(
+                part.casefold() in GENERATED_WEBHELP_DIRECTORIES
+                for part in relative.parts[:-1]
+            ):
+                continue
+            if resolved.suffix.lower() in supported:
+                candidates.append(resolved)
+
+    for yielded, candidate in enumerate(
+        sorted(candidates, key=lambda item: str(item).casefold())
+    ):
         if max_files is not None and yielded >= max_files:
             break
-        try:
-            resolved = candidate.resolve()
-        except OSError:
-            continue
-        if not resolved.is_relative_to(root) or not resolved.is_file():
-            continue
-        relative = resolved.relative_to(root)
-        if any(
-            part.casefold() in GENERATED_WEBHELP_DIRECTORIES
-            for part in relative.parts[:-1]
-        ):
-            continue
-        if resolved.suffix.lower() not in supported:
-            continue
-        yielded += 1
-        yield resolved
+        yield candidate

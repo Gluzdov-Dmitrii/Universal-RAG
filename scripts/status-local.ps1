@@ -68,7 +68,7 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
     & docker info --format "{{.ServerVersion}}" 2>$null | Out-Null
     if ($LASTEXITCODE -eq 0) {
         $dockerState = "available"
-        & docker compose -f $composePath ps
+        & docker compose --env-file $localEnvironmentPath -f $composePath ps
     }
 }
 

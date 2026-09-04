@@ -2,7 +2,7 @@ from __future__ import annotations
 
 
 class StubProvider:
-    """Deterministic local stand-in that proves the marker round trip."""
+    """Deterministic test provider that proves the marker round trip."""
 
     name = "stub"
 
@@ -12,7 +12,7 @@ class StubProvider:
         sanitized_contexts: list[dict[str, object]],
     ) -> str:
         lines = [
-            "# Локальный mock-ответ",
+            "# Тестовый mock-ответ",
             "",
             "Этот режим не генерирует выводы. Он показывает данные, которые получил бы provider.",
             "",

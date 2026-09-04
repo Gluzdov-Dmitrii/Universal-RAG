@@ -37,6 +37,10 @@ http://host.docker.internal:8000/v1
 Её key берётся из `SECURE_RAG_API_KEY`. `WEBUI_SECRET_KEY` должен оставаться стабильным:
 его смена инвалидирует сессии и данные, зашифрованные Open WebUI.
 
+Встроенный retrieval Open WebUI отключён: документы индексирует Universal RAG, поэтому при
+первом запуске UI не загружает вторую embedding-модель и не создаёт параллельный индекс.
+Загрузка файлов через стандартный uploader Open WebUI в эту схему не входит.
+
 ## Первый запуск
 
 1. Создайте постоянный clone, например `C:\Services\Universal-RAG`.
@@ -54,6 +58,14 @@ http://host.docker.internal:8000/v1
 на `SECURE_RAG_CONFIG=config\app.yaml`, после чего выполнить полный `index --max-files 0`.
 Старая collection остаётся в Qdrant volume и не удаляется автоматически; удалять её можно
 только после snapshot и проверки нового индекса.
+
+Перед переиндексацией старое согласованное состояние можно сохранить без возврата конфигурации:
+
+```powershell
+.\scripts\backup-state.ps1 `
+    -DestinationRoot D:\Universal-RAG-backups `
+    -QdrantCollection secure_rag_pilot_e5_v1
+```
 
 ## CI/CD
 

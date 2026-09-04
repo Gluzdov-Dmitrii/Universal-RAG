@@ -22,6 +22,22 @@ _SAFE_ERROR_CODE_RE = re.compile(r"^[a-z0-9_]{1,80}$")
 WEB_API_IMPORT = "secure_rag.api.web:app"
 
 
+def _load_repo_environment(path: Path | None = None) -> None:
+    """Load the repository .env without overriding service-level environment values."""
+
+    environment_path = path or Path(__file__).resolve().parents[3] / ".env"
+    if not environment_path.is_file():
+        return
+    for raw_line in environment_path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        name, separator, value = line.partition("=")
+        if not separator or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise ValueError("invalid_dotenv_line")
+        os.environ.setdefault(name, value)
+
+
 def _safe_print(value: dict[str, object]) -> None:
     print(json.dumps(value, ensure_ascii=False, indent=2))
 
@@ -165,7 +181,7 @@ def _read_question(args: argparse.Namespace) -> str:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="secure-rag",
-        description="Local RAG → sanitizer → Codex file bridge → demarker",
+        description="Universal RAG → sanitizer → provider bridge → demarker",
     )
     parser.add_argument("--config", default=None, help="Path to app.yaml")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -246,6 +262,20 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    try:
+        _load_repo_environment()
+    except Exception as exc:
+        _safe_print(
+            {
+                "status": "error",
+                "error_type": type(exc).__name__,
+                "error_code": (
+                    str(exc) if _SAFE_ERROR_CODE_RE.fullmatch(str(exc)) else "operation_failed"
+                ),
+                "raw_document_content_printed": False,
+            }
+        )
+        return 1
     parser = build_parser()
     args = parser.parse_args(argv)
     try:

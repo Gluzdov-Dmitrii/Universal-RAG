@@ -68,6 +68,8 @@ Copy-Item .env.example .env
 
 Реальные секреты никогда не коммитятся. После настройки:
 
+CLI автоматически читает корневой `.env`; уже заданные системные переменные имеют приоритет.
+
 ```powershell
 .\scripts\start-local.ps1
 .\scripts\status-local.ps1

@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import os
 import sys
 from types import ModuleType
 
 import pytest
 
 from secure_rag.config import EmbeddingConfig, NerModelConfig
-from secure_rag.infrastructure.huggingface import HF_LOCAL_ONLY_ENV, hf_local_files_only
+from secure_rag.infrastructure.huggingface import (
+    HF_LOCAL_ONLY_ENV,
+    HF_OFFLINE_ENVIRONMENTS,
+    hf_local_files_only,
+)
 from secure_rag.retrieval.embeddings import SentenceTransformerEmbedder
 from secure_rag.sanitization.ner import TransformersNerDetector
 
 
 def _set_local_only_environment(monkeypatch: pytest.MonkeyPatch, value: str | None) -> None:
+    for name in HF_OFFLINE_ENVIRONMENTS:
+        monkeypatch.setenv(name, "0")
     if value is None:
         monkeypatch.delenv(HF_LOCAL_ONLY_ENV, raising=False)
     else:
@@ -54,6 +61,8 @@ def test_sentence_transformer_receives_local_only_policy(
     )
 
     assert captured["local_files_only"] is expected
+    for name in HF_OFFLINE_ENVIRONMENTS:
+        assert os.environ[name] == ("1" if expected else "0")
 
 
 @pytest.mark.parametrize(

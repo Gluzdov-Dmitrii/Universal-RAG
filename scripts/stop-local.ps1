@@ -27,7 +27,7 @@ if (Test-Path -LiteralPath $localEnvironmentPath -PathType Leaf) {
 }
 
 if (Get-Command docker -ErrorAction SilentlyContinue) {
-    & docker compose -f $composePath stop open-webui
+    & docker compose --env-file $localEnvironmentPath -f $composePath stop open-webui
     if ($LASTEXITCODE -ne 0) { throw "Open WebUI compose stop failed." }
 }
 
@@ -63,7 +63,7 @@ if (Test-Path -LiteralPath $pidFile -PathType Leaf) {
 }
 
 if ($StopQdrant) {
-    & docker compose -f $composePath stop qdrant
+    & docker compose --env-file $localEnvironmentPath -f $composePath stop qdrant
     if ($LASTEXITCODE -ne 0) { throw "Qdrant compose stop failed." }
 }
 

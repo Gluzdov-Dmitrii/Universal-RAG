@@ -10,7 +10,7 @@ param(
     [int]$ApiTimeoutSeconds = 90,
 
     [ValidateRange(10, 600)]
-    [int]$WebUiTimeoutSeconds = 180
+    [int]$WebUiTimeoutSeconds = 300
 )
 
 Set-StrictMode -Version Latest
@@ -127,7 +127,7 @@ if (-not (Test-DockerEngine)) {
     }
 }
 
-& docker compose -f $composePath up -d qdrant
+& docker compose --env-file $localEnvironmentPath -f $composePath up -d qdrant
 if ($LASTEXITCODE -ne 0) { throw "Qdrant compose start failed with exit code $LASTEXITCODE." }
 if (-not (Wait-Until -TimeoutSeconds $QdrantTimeoutSeconds -Condition {
             Test-HttpHealth -Url $qdrantHealthUrl
@@ -188,11 +188,12 @@ if (-not $apiRunning) {
     }
 }
 
-& docker compose -f $composePath up -d open-webui
+& docker compose --env-file $localEnvironmentPath -f $composePath up -d open-webui
 if ($LASTEXITCODE -ne 0) { throw "Open WebUI compose start failed with exit code $LASTEXITCODE." }
 if (-not (Wait-Until -TimeoutSeconds $WebUiTimeoutSeconds -Condition {
             Test-HttpHealth -Url $webUiHealthUrl
         })) {
+    & docker compose --env-file $localEnvironmentPath -f $composePath logs --tail 80 open-webui
     throw "Open WebUI did not become healthy within $WebUiTimeoutSeconds seconds."
 }
 

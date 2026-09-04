@@ -9,6 +9,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot ".."))
 $pythonPath = Join-Path $repoRoot ".venv\Scripts\python.exe"
 $stopScript = Join-Path $repoRoot "scripts\stop-local.ps1"
+$localEnvironmentPath = Join-Path $repoRoot ".env"
 
 Set-Location $repoRoot
 if (-not (Test-Path -LiteralPath (Join-Path $repoRoot ".git") -PathType Container)) {
@@ -17,7 +18,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $repoRoot ".git") -PathType Containe
 if ((& git status --porcelain).Count -gt 0) {
     throw "Deployment working tree has uncommitted changes. Resolve them before deployment."
 }
-if (-not (Test-Path -LiteralPath (Join-Path $repoRoot ".env") -PathType Leaf)) {
+if (-not (Test-Path -LiteralPath $localEnvironmentPath -PathType Leaf)) {
     throw "Deployment .env is missing."
 }
 
@@ -38,6 +39,6 @@ if (-not (Test-Path -LiteralPath $pythonPath -PathType Leaf)) {
 }
 & $pythonPath -m pip install -e ".[web]"
 if ($LASTEXITCODE -ne 0) { throw "Python dependency installation failed." }
-& docker compose -f deploy/docker-compose.yml pull qdrant open-webui
+& docker compose --env-file $localEnvironmentPath -f deploy/docker-compose.yml pull qdrant open-webui
 if ($LASTEXITCODE -ne 0) { throw "Container image pull failed." }
 & (Join-Path $repoRoot "scripts\start-local.ps1")

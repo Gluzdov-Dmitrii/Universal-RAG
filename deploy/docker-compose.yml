@@ -26,12 +26,18 @@ services:
     environment:
       WEBUI_AUTH: "true"
       WEBUI_URL: "${OPEN_WEBUI_URL:-http://localhost:3000}"
+      CORS_ALLOW_ORIGIN: "${OPEN_WEBUI_URL:-http://localhost:3000}"
       WEBUI_SECRET_KEY: "${OPEN_WEBUI_SECRET_KEY:?Set OPEN_WEBUI_SECRET_KEY in .env}"
       ENABLE_OPENAI_API: "true"
       ENABLE_OPENAI_API_PASSTHROUGH: "false"
       ENABLE_VALVE_ENCRYPTION: "true"
       OPENAI_API_BASE_URL: "http://host.docker.internal:${SECURE_RAG_API_PORT:-8000}/v1"
       OPENAI_API_KEY: "${SECURE_RAG_API_KEY:?Set SECURE_RAG_API_KEY in .env}"
+      # Retrieval is implemented by Universal RAG. Keeping Open WebUI's built-in
+      # retrieval disabled avoids a second index and a model download at first boot.
+      BYPASS_EMBEDDING_AND_RETRIEVAL: "true"
+      RAG_EMBEDDING_ENGINE: "openai"
+      RAG_EMBEDDING_MODEL: "unused-openwebui-rag-disabled"
     volumes:
       - open_webui_data:/app/backend/data
     healthcheck:
