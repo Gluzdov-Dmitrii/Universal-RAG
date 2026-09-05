@@ -176,3 +176,27 @@ def test_pipeline_retrieves_raw_question_before_sanitization(tmp_path) -> None:
     ).run(question, provider="stub")
 
     assert retriever.queries == [question]
+
+
+def test_provider_initialization_failure_emits_safe_stage(monkeypatch, tmp_path) -> None:
+    config = _config(tmp_path)
+    config.ensure_runtime()
+    events: list[PipelineEvent] = []
+    pipeline = SecureRagPipeline(
+        config,
+        EmptyRetriever(),
+        PrivacyGateway(EnsembleDetector([RegexDetector()])),
+        FakeManifest(),
+    )
+
+    def fail(_provider: str):
+        raise RuntimeError(r"secret from D:\Nextcloud\private.docx")
+
+    monkeypatch.setattr(pipeline, "_create_provider", fail)
+    with pytest.raises(RuntimeError):
+        pipeline.run("test", provider="responses", on_event=events.append)
+
+    provider_events = [event for event in events if event.stage == "provider.initialize"]
+    assert [event.status for event in provider_events] == ["started", "failed"]
+    assert provider_events[-1].details["error_type"] == "RuntimeError"
+    assert "private.docx" not in str(dict(provider_events[-1].details))

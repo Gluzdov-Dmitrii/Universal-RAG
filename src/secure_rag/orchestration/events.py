@@ -41,6 +41,7 @@ _PERSISTED_DETAIL_KEYS = {
     "candidates",
     "chunks",
     "context_count",
+    "conversation_context_chars",
     "detected_spans",
     "documents_read",
     "embedding_candidates",

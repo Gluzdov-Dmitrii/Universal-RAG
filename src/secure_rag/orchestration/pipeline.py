@@ -168,7 +168,13 @@ class SecureRagPipeline:
             self._persist_and_restore(result, marked_answer, on_event, iteration=1)
             return result
 
-        automatic_provider = self._create_provider(resolved_provider)
+        with timed_stage(
+            on_event,
+            "provider.initialize",
+            "Подготовка выбранной модели",
+            {"provider": resolved_provider},
+        ):
+            automatic_provider = self._create_provider(resolved_provider)
         iteration = 1
         while True:
             final_answer: str | None = None

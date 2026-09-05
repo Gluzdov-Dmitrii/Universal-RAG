@@ -3,7 +3,9 @@ from __future__ import annotations
 import base64
 import hmac
 import json
+import logging
 import os
+import queue
 import re
 import threading
 import time
@@ -22,6 +24,7 @@ from secure_rag.config import AppConfig, load_config
 from secure_rag.domain.models import BridgeResult, DocumentSource, MarkerState
 from secure_rag.ingestion.cache import ProcessMemoryExtractedTextCache
 from secure_rag.ingestion.manifest import ManifestStore
+from secure_rag.orchestration.events import EventCallback, JsonlEventLog, PipelineEvent
 from secure_rag.orchestration.pipeline import SecureRagPipeline
 from secure_rag.retrieval.service import Retriever
 
@@ -39,6 +42,9 @@ _ROLE_LABELS = {
     "assistant": "Ассистент",
     "tool": "Инструмент",
 }
+_PROGRESS_END_MARKER = "<!-- universal-rag-progress-end -->"
+_PIPELINE_ERROR_MARKER = "<!-- universal-rag-error -->"
+_LOGGER = logging.getLogger(__name__)
 
 
 class ChatMessage(BaseModel):
@@ -109,7 +115,13 @@ class RagRuntime:
                     self._resources = self._create_resources()
         return self._resources
 
-    def run(self, question: str, *, conversation_context: str = "") -> BridgeResult:
+    def run(
+        self,
+        question: str,
+        *,
+        conversation_context: str = "",
+        on_event: EventCallback | None = None,
+    ) -> BridgeResult:
         # The first server profile has one GPU/model set. Serial execution avoids concurrent
         # model loads and makes request-scoped Marker Vault ownership unambiguous.
         with self._request_lock:
@@ -135,6 +147,7 @@ class RagRuntime:
                     question,
                     provider=os.getenv("SECURE_RAG_PROVIDER", "auto").strip().lower(),
                     conversation_context=conversation_context,
+                    on_event=on_event,
                 )
             finally:
                 store.close()
@@ -298,9 +311,16 @@ def _state_messages(messages: list[ChatMessage]) -> tuple[StateMessage, ...]:
 
 
 def _history_content(message: StateMessage) -> str:
-    if message.role == "assistant":
-        return message.content.split(_SOURCE_SECTION, 1)[0].strip()
-    return message.content.strip()
+    content = message.content.strip()
+    if message.role != "assistant":
+        return content
+    if _PIPELINE_ERROR_MARKER in content:
+        return ""
+    if _PROGRESS_END_MARKER in content:
+        content = content.split(_PROGRESS_END_MARKER, 1)[1].strip()
+        if content.startswith("Ответ:"):
+            content = content.removeprefix("Ответ:").strip()
+    return content.split(_SOURCE_SECTION, 1)[0].strip()
 
 
 def _conversation_context(messages: tuple[StateMessage, ...]) -> str:
@@ -384,9 +404,8 @@ def _chunk_payload(
     }
 
 
-def _stream_response(completion_id: str, model: str, content: str):
-    yield f"data: {json.dumps(_chunk_payload(completion_id, model, {'role': 'assistant'}))}\n\n"
-    yield (
+def _stream_chunk(completion_id: str, model: str, content: str) -> str:
+    return (
         "data: "
         + json.dumps(
             _chunk_payload(completion_id, model, {"content": content}),
@@ -394,6 +413,216 @@ def _stream_response(completion_id: str, model: str, content: str):
         )
         + "\n\n"
     )
+
+
+_STAGE_TITLES = {
+    "request.validate": "Проверяю запрос и контекст чата",
+    "retrieval.total": "Ищу релевантные фрагменты в базе документов",
+    "retrieval.iteration": "Уточняю поиск по найденному контексту",
+    "sanitizer.detect": "Проверяю чувствительные данные",
+    "sanitizer.mark": "Формирую безопасную версию контекста",
+    "outbound.prepare": "Готовлю запрос для модели",
+    "outbound.update": "Обновляю контекст после дополнительного поиска",
+    "provider.initialize": "Подготавливаю выбранную модель",
+    "provider.call": "Формирую ответ",
+    "demarker.restore": "Восстанавливаю ответ внутри корпоративного контура",
+    "chat.persist": "Сохраняю состояние чата и поиска",
+}
+
+
+def _safe_stage_title(stage: str) -> str:
+    return _STAGE_TITLES.get(stage, "Обрабатываю запрос")
+
+
+def _progress_text(event: PipelineEvent) -> str | None:
+    title = _safe_stage_title(event.stage)
+    if event.status == "started":
+        return f"- ⏳ {title}…\n"
+    if event.status == "failed" and event.stage != "pipeline.total":
+        return f"- ⚠️ Этап «{title}» завершился ошибкой.\n"
+    if event.status == "completed" and event.stage == "retrieval.total":
+        count = event.details.get("index_hits")
+        if isinstance(count, int):
+            return f"- ✓ Поиск завершён: найдено фрагментов — {count}.\n"
+    if event.status == "completed" and event.stage in {
+        "provider.initialize",
+        "demarker.restore",
+        "chat.persist",
+    }:
+        return f"- ✓ {title}.\n"
+    return None
+
+
+def _event_callback(
+    diagnostic_id: str,
+    event_queue: queue.Queue[tuple[str, object]] | None = None,
+) -> tuple[EventCallback, dict[str, str]]:
+    default_config = str(_REPO_ROOT / "config" / "app.yaml")
+    config = load_config(os.getenv("SECURE_RAG_CONFIG", default_config))
+    configured_root = os.getenv("SECURE_RAG_PIPELINE_EVENT_DIR")
+    event_root = (
+        Path(configured_root).expanduser().resolve()
+        if configured_root
+        else config.diagnostics_path / "pipeline-events"
+    )
+    try:
+        event_log = JsonlEventLog(event_root, diagnostic_id)
+    except OSError:
+        event_log = None
+        _LOGGER.error(
+            "pipeline_event_log_init_failed diagnostic_id=%s",
+            diagnostic_id,
+        )
+    progress_state = {"stage": "pipeline.total"}
+
+    def callback(event: PipelineEvent) -> None:
+        progress_state["stage"] = event.stage
+        if event_queue is not None:
+            event_queue.put(("event", event))
+        if event_log is not None:
+            try:
+                event_log(event)
+            except OSError:
+                # Observability must not turn an otherwise valid answer into a failed request.
+                _LOGGER.error(
+                    "pipeline_event_log_failed diagnostic_id=%s stage=%s",
+                    diagnostic_id,
+                    event.stage,
+                )
+
+    return callback, progress_state
+
+
+def _execute_pipeline(
+    *,
+    question: str,
+    conversation_context: str,
+    model: str,
+    key: ConversationKey,
+    state_store: ChatStateStore,
+    on_event: EventCallback,
+) -> str:
+    result = runtime.run(
+        question,
+        conversation_context=conversation_context,
+        on_event=on_event,
+    )
+    content = _answer_content(result)
+    on_event(
+        PipelineEvent(
+            stage="chat.persist",
+            label="Сохранение состояния чата и поиска",
+            status="started",
+        )
+    )
+    state_store.append_assistant(key, content)
+    state_store.record_retrieval(
+        key,
+        request_id=result.request_id,
+        model_id=model,
+        question=question,
+        sources=result.sources,
+    )
+    on_event(
+        PipelineEvent(
+            stage="chat.persist",
+            label="Сохранение состояния чата и поиска",
+            status="completed",
+        )
+    )
+    return content
+
+
+def _record_pipeline_failure(
+    *,
+    diagnostic_id: str,
+    stage: str,
+    error: Exception,
+    on_event: EventCallback,
+) -> None:
+    on_event(
+        PipelineEvent(
+            stage="pipeline.total",
+            label="Обработка запроса",
+            status="failed",
+            details={"error_type": type(error).__name__},
+        )
+    )
+    _LOGGER.error(
+        "pipeline_failed diagnostic_id=%s stage=%s error_type=%s",
+        diagnostic_id,
+        stage,
+        type(error).__name__,
+    )
+
+
+def _stream_pipeline_response(
+    *,
+    completion_id: str,
+    diagnostic_id: str,
+    model: str,
+    question: str,
+    conversation_context: str,
+    key: ConversationKey,
+    state_store: ChatStateStore,
+):
+    event_queue: queue.Queue[tuple[str, object]] = queue.Queue()
+    on_event, progress_state = _event_callback(diagnostic_id, event_queue)
+
+    def worker() -> None:
+        try:
+            content = _execute_pipeline(
+                question=question,
+                conversation_context=conversation_context,
+                model=model,
+                key=key,
+                state_store=state_store,
+                on_event=on_event,
+            )
+            event_queue.put(("result", content))
+        except Exception as error:
+            failed_stage = progress_state["stage"]
+            _record_pipeline_failure(
+                diagnostic_id=diagnostic_id,
+                stage=failed_stage,
+                error=error,
+                on_event=on_event,
+            )
+            event_queue.put(("error", failed_stage))
+
+    threading.Thread(
+        target=worker,
+        name=f"rag-{diagnostic_id[:8]}",
+        daemon=True,
+    ).start()
+    yield f"data: {json.dumps(_chunk_payload(completion_id, model, {'role': 'assistant'}))}\n\n"
+    yield _stream_chunk(completion_id, model, "Ход выполнения:\n\n")
+    while True:
+        try:
+            kind, payload = event_queue.get(timeout=10)
+        except queue.Empty:
+            yield ": keep-alive\n\n"
+            continue
+        if kind == "event":
+            assert isinstance(payload, PipelineEvent)
+            if progress := _progress_text(payload):
+                yield _stream_chunk(completion_id, model, progress)
+            continue
+        if kind == "result":
+            assert isinstance(payload, str)
+            separator = f"\n{_PROGRESS_END_MARKER}\n\nОтвет:\n\n"
+            yield _stream_chunk(completion_id, model, separator + payload)
+            break
+        assert kind == "error"
+        stage = _safe_stage_title(str(payload))
+        error_text = (
+            f"\n{_PROGRESS_END_MARKER}\n{_PIPELINE_ERROR_MARKER}\n\n"
+            "Не удалось завершить обработку запроса.\n\n"
+            f"Этап: {stage}.\n"
+            f"Код диагностики: `{diagnostic_id}`."
+        )
+        yield _stream_chunk(completion_id, model, error_text)
+        break
     yield f"data: {json.dumps(_chunk_payload(completion_id, model, {}, 'stop'))}\n\n"
     yield "data: [DONE]\n\n"
 
@@ -427,35 +656,67 @@ def chat_completions(
         raise HTTPException(status_code=404, detail="model_not_found")
     question = _latest_user_question(request.messages)
     key = ConversationKey(identity.user_id, identity.chat_id)
+    diagnostic_id = str(uuid.uuid4())
+    completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     try:
         state_store = _chat_state_store()
         history = state_store.sync_messages(key, _state_messages(request.messages))
-        result = runtime.run(
-            question,
-            conversation_context=_conversation_context(history),
-        )
-        content = _answer_content(result)
-        state_store.append_assistant(key, content)
-        state_store.record_retrieval(
-            key,
-            request_id=result.request_id,
-            model_id=request.model,
-            question=question,
-            sources=result.sources,
-        )
+        conversation_context = _conversation_context(history)
     except HTTPException:
         raise
-    except Exception:
-        # Do not return source paths, document content, raw values, or tracebacks to clients.
-        raise HTTPException(status_code=500, detail="pipeline_failed") from None
+    except Exception as error:
+        _LOGGER.error(
+            "chat_state_failed diagnostic_id=%s error_type=%s",
+            diagnostic_id,
+            type(error).__name__,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={"code": "chat_state_failed", "diagnostic_id": diagnostic_id},
+        ) from None
 
-    completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     if request.stream:
         return StreamingResponse(
-            _stream_response(completion_id, request.model, content),
+            _stream_pipeline_response(
+                completion_id=completion_id,
+                diagnostic_id=diagnostic_id,
+                model=request.model,
+                question=question,
+                conversation_context=conversation_context,
+                key=key,
+                state_store=state_store,
+            ),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache"},
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    on_event, progress_state = _event_callback(diagnostic_id)
+    try:
+        content = _execute_pipeline(
+            question=question,
+            conversation_context=conversation_context,
+            model=request.model,
+            key=key,
+            state_store=state_store,
+            on_event=on_event,
+        )
+    except Exception as error:
+        failed_stage = progress_state["stage"]
+        _record_pipeline_failure(
+            diagnostic_id=diagnostic_id,
+            stage=failed_stage,
+            error=error,
+            on_event=on_event,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "pipeline_failed",
+                "stage": _safe_stage_title(failed_stage),
+                "diagnostic_id": diagnostic_id,
+            },
+        ) from None
+
     return JSONResponse(
         {
             "id": completion_id,
