@@ -6,7 +6,8 @@ alwaysApply: true
 # Git workflow
 
 - When a task changes tracked files and the implementation is complete, inspect `git status` and the diff, run focused checks, and create a local Git commit before handing the task back.
-- Stage only files related to the current task. Do not stage secrets, `.env` files, tokens, runtime state, caches, generated artifacts, or unrelated user changes unless explicitly requested.
+- Stage only files related to the current task.
+- Never stage secrets, `.env` files, tokens, runtime state, caches, generated artifacts, or unrelated user changes unless explicitly requested.
 - Use a short imperative commit message describing the result.
 - Do not push, amend, rebase, reset, or rewrite history unless explicitly requested.
 - If checks fail, report them and fix task-caused failures when possible before committing.

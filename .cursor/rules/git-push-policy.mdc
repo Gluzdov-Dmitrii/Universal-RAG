@@ -1,0 +1,12 @@
+---
+description: Push committed task changes to the configured upstream
+alwaysApply: true
+---
+
+# Git push
+
+- After a successful local commit for the current task, and after checks pass, run a regular `git push` to the already-configured upstream.
+- Publish only changes from the current task.
+- Do not push if checks failed, the working tree has unrelated changes, the branch has no configured upstream, a force push would be required, secrets or tokens are detected, or the server rejects the push.
+- Never run `git push --force`. Never create a remote automatically.
+- If upstream is missing, tell the user the exact command to run, for example `git push -u origin HEAD`.
