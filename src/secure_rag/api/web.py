@@ -24,6 +24,7 @@ from secure_rag.config import AppConfig, load_config
 from secure_rag.domain.models import BridgeResult, DocumentSource, MarkerState
 from secure_rag.ingestion.cache import ProcessMemoryExtractedTextCache
 from secure_rag.ingestion.manifest import ManifestStore
+from secure_rag.orchestration.context import ProcessMemorySpanCache
 from secure_rag.orchestration.events import EventCallback, JsonlEventLog, PipelineEvent
 from secure_rag.orchestration.pipeline import SecureRagPipeline
 from secure_rag.retrieval.service import Retriever
@@ -60,6 +61,7 @@ class ChatCompletionRequest(BaseModel):
     model: str
     messages: list[ChatMessage] = Field(min_length=1, max_length=200)
     stream: bool = False
+    metadata: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +76,7 @@ class RuntimeResources:
     embedder: Any
     gateway: Any
     extracted_text_cache: ProcessMemoryExtractedTextCache
+    span_cache: ProcessMemorySpanCache
 
 
 class RagRuntime:
@@ -106,7 +109,8 @@ class RagRuntime:
                 config.ingestion.max_extracted_chars,
             ),
         )
-        return RuntimeResources(config, embedder, gateway, extracted_text_cache)
+        span_cache = ProcessMemorySpanCache()
+        return RuntimeResources(config, embedder, gateway, extracted_text_cache, span_cache)
 
     def resources(self) -> RuntimeResources:
         if self._resources is None:
@@ -120,6 +124,7 @@ class RagRuntime:
         question: str,
         *,
         conversation_context: str = "",
+        retrieval_context: str = "",
         on_event: EventCallback | None = None,
     ) -> BridgeResult:
         # The first server profile has one GPU/model set. Serial execution avoids concurrent
@@ -142,11 +147,13 @@ class RagRuntime:
                     retriever,
                     resources.gateway,
                     manifest,
+                    span_cache=resources.span_cache,
                 )
                 return pipeline.run(
                     question,
                     provider=os.getenv("SECURE_RAG_PROVIDER", "auto").strip().lower(),
                     conversation_context=conversation_context,
+                    retrieval_context=retrieval_context,
                     on_event=on_event,
                 )
             finally:
@@ -349,6 +356,51 @@ def _conversation_context(messages: tuple[StateMessage, ...]) -> str:
     return "\n\n".join(reversed(blocks))
 
 
+def _retrieval_context(messages: tuple[StateMessage, ...]) -> str:
+    """Keep follow-up retrieval anchored to recent user questions, not UI/system text."""
+
+    latest_user_index = next(
+        (
+            index
+            for index in range(len(messages) - 1, -1, -1)
+            if messages[index].role == "user"
+        ),
+        None,
+    )
+    if latest_user_index is None:
+        return ""
+    max_messages = _positive_env_int("SECURE_RAG_RETRIEVAL_HISTORY_MESSAGES", 3)
+    max_chars = _positive_env_int("SECURE_RAG_RETRIEVAL_HISTORY_CHARS", 2_000)
+    prior_questions = [
+        message.content.strip()
+        for message in messages[:latest_user_index]
+        if message.role == "user" and message.content.strip()
+    ][-max_messages:]
+    selected: list[str] = []
+    used_chars = 0
+    for question in reversed(prior_questions):
+        remaining = max_chars - used_chars
+        if remaining <= 0:
+            break
+        selected.append(question[-remaining:])
+        used_chars += len(selected[-1])
+    if not selected:
+        return ""
+    return "Предыдущие вопросы пользователя:\n" + "\n".join(
+        f"- {question}" for question in reversed(selected)
+    )
+
+
+def _openwebui_task(request: ChatCompletionRequest) -> str | None:
+    if not request.metadata:
+        return None
+    raw_task = request.metadata.get("task")
+    if not isinstance(raw_task, str):
+        return None
+    task = raw_task.rsplit(".", 1)[-1].strip().lower()
+    return task if re.fullmatch(r"[a-z0-9_]{1,80}", task) else None
+
+
 def _format_location(kind: str, start: str, end: str | None) -> str:
     labels = {
         "page": "стр.",
@@ -377,16 +429,20 @@ def _plain_text_block(value: str) -> str:
 
 
 def _answer_content(result: BridgeResult) -> str:
-    answer = (
-        result.restored_output.read_text(encoding="utf-8")
-        if result.restored_output.exists()
-        else ""
-    )
+    answer = _restored_answer(result)
     sections = [_plain_text_block(answer)]
     if result.sources:
         source_text = "\n".join(_format_source(source) for source in result.sources)
         sections.extend(("Источники на сервере:", _plain_text_block(source_text)))
     return "\n\n".join(sections)
+
+
+def _restored_answer(result: BridgeResult) -> str:
+    return (
+        result.restored_output.read_text(encoding="utf-8")
+        if result.restored_output.exists()
+        else ""
+    )
 
 
 def _chunk_payload(
@@ -419,6 +475,7 @@ _STAGE_TITLES = {
     "request.validate": "Проверяю запрос и контекст чата",
     "retrieval.total": "Ищу релевантные фрагменты в базе документов",
     "retrieval.iteration": "Уточняю поиск по найденному контексту",
+    "retrieval.parent_context": "Собираю полные версии найденных документов",
     "sanitizer.detect": "Проверяю чувствительные данные",
     "sanitizer.mark": "Формирую безопасную версию контекста",
     "outbound.prepare": "Готовлю запрос для модели",
@@ -444,6 +501,16 @@ def _progress_text(event: PipelineEvent) -> str | None:
         count = event.details.get("index_hits")
         if isinstance(count, int):
             return f"- ✓ Поиск завершён: найдено фрагментов — {count}.\n"
+    if event.status == "completed" and event.stage == "retrieval.parent_context":
+        contexts = event.details.get("contexts")
+        whole_documents = event.details.get("whole_documents")
+        context_chars = event.details.get("context_chars")
+        if all(isinstance(value, int) for value in (contexts, whole_documents, context_chars)):
+            return (
+                "- ✓ Контекст подготовлен: "
+                f"документов — {contexts}, целиком — {whole_documents}, "
+                f"символов — {context_chars}.\n"
+            )
     if event.status == "completed" and event.stage in {
         "provider.initialize",
         "demarker.restore",
@@ -497,6 +564,7 @@ def _execute_pipeline(
     *,
     question: str,
     conversation_context: str,
+    retrieval_context: str,
     model: str,
     key: ConversationKey,
     state_store: ChatStateStore,
@@ -505,6 +573,7 @@ def _execute_pipeline(
     result = runtime.run(
         question,
         conversation_context=conversation_context,
+        retrieval_context=retrieval_context,
         on_event=on_event,
     )
     content = _answer_content(result)
@@ -563,6 +632,7 @@ def _stream_pipeline_response(
     model: str,
     question: str,
     conversation_context: str,
+    retrieval_context: str,
     key: ConversationKey,
     state_store: ChatStateStore,
 ):
@@ -574,6 +644,7 @@ def _stream_pipeline_response(
             content = _execute_pipeline(
                 question=question,
                 conversation_context=conversation_context,
+                retrieval_context=retrieval_context,
                 model=model,
                 key=key,
                 state_store=state_store,
@@ -627,6 +698,60 @@ def _stream_pipeline_response(
     yield "data: [DONE]\n\n"
 
 
+def _completion_response(completion_id: str, model: str, content: str) -> JSONResponse:
+    return JSONResponse(
+        {
+            "id": completion_id,
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": content},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        }
+    )
+
+
+def _background_task_response(
+    request: ChatCompletionRequest,
+    task: str,
+    completion_id: str,
+    diagnostic_id: str,
+) -> JSONResponse:
+    # Open WebUI sends follow-up generation through the selected chat model after every
+    # answer. It is UI housekeeping, not a new user turn, and must never enter RAG state.
+    if task == "follow_up_generation":
+        return _completion_response(completion_id, request.model, '{"follow_ups":[]}')
+
+    question = _latest_user_question(request.messages)
+    on_event, progress_state = _event_callback(diagnostic_id)
+    try:
+        result = runtime.run(question, on_event=on_event)
+        content = _restored_answer(result).strip()
+    except Exception as error:
+        failed_stage = progress_state["stage"]
+        _record_pipeline_failure(
+            diagnostic_id=diagnostic_id,
+            stage=failed_stage,
+            error=error,
+            on_event=on_event,
+        )
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "code": "background_task_failed",
+                "task": task,
+                "diagnostic_id": diagnostic_id,
+            },
+        ) from None
+    return _completion_response(completion_id, request.model, content)
+
+
 @app.get("/healthz")
 def health() -> dict[str, str]:
     return {"status": "ok", "model": _MODEL_ID}
@@ -654,14 +779,18 @@ def chat_completions(
 ):
     if request.model != _MODEL_ID:
         raise HTTPException(status_code=404, detail="model_not_found")
-    question = _latest_user_question(request.messages)
-    key = ConversationKey(identity.user_id, identity.chat_id)
     diagnostic_id = str(uuid.uuid4())
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
+    if task := _openwebui_task(request):
+        return _background_task_response(request, task, completion_id, diagnostic_id)
+
+    question = _latest_user_question(request.messages)
+    key = ConversationKey(identity.user_id, identity.chat_id)
     try:
         state_store = _chat_state_store()
         history = state_store.sync_messages(key, _state_messages(request.messages))
         conversation_context = _conversation_context(history)
+        retrieval_context = _retrieval_context(history)
     except HTTPException:
         raise
     except Exception as error:
@@ -683,6 +812,7 @@ def chat_completions(
                 model=request.model,
                 question=question,
                 conversation_context=conversation_context,
+                retrieval_context=retrieval_context,
                 key=key,
                 state_store=state_store,
             ),
@@ -695,6 +825,7 @@ def chat_completions(
         content = _execute_pipeline(
             question=question,
             conversation_context=conversation_context,
+            retrieval_context=retrieval_context,
             model=request.model,
             key=key,
             state_store=state_store,
@@ -717,19 +848,4 @@ def chat_completions(
             },
         ) from None
 
-    return JSONResponse(
-        {
-            "id": completion_id,
-            "object": "chat.completion",
-            "created": int(time.time()),
-            "model": request.model,
-            "choices": [
-                {
-                    "index": 0,
-                    "message": {"role": "assistant", "content": content},
-                    "finish_reason": "stop",
-                }
-            ],
-            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
-        }
-    )
+    return _completion_response(completion_id, request.model, content)

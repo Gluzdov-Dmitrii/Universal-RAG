@@ -150,11 +150,14 @@ def test_transformer_policy_filters_disallowed_low_score_and_short_spans() -> No
     detector.allowed_labels = {"PER", "ORG"}
     detector.min_chars = 3
     detector._character_windows = lambda text: [(0, len(text))]
-    detector._pipeline = lambda _text: [
-        {"entity_group": "POSITION", "score": 0.99, "start": 0, "end": 7},
-        {"entity_group": "ORG", "score": 0.99, "start": 8, "end": 10},
-        {"entity_group": "ORG", "score": 0.84, "start": 11, "end": 24},
-        {"entity_group": "PER", "score": 0.93, "start": 11, "end": 24},
+    detector._pipeline = lambda texts, batch_size: [
+        [
+            {"entity_group": "POSITION", "score": 0.99, "start": 0, "end": 7},
+            {"entity_group": "ORG", "score": 0.99, "start": 8, "end": 10},
+            {"entity_group": "ORG", "score": 0.84, "start": 11, "end": 24},
+            {"entity_group": "PER", "score": 0.93, "start": 11, "end": 24},
+        ]
+        for _ in texts
     ]
 
     spans = detector.detect("инженер AC Анна Смирнова")

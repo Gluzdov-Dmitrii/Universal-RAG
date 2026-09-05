@@ -169,6 +169,21 @@ class Indexer:
                         and previous.revision == revision
                         and previous.index_signature == index_signature
                     ):
+                        # Document IDs are based on the relative path, so moving the
+                        # synchronized source root does not require new embeddings. Keep
+                        # the verified absolute path current or online retrieval will
+                        # reject every otherwise valid Qdrant hit as unavailable.
+                        if (
+                            previous.source_path != path
+                            or previous.relative_path != relative
+                        ):
+                            self.manifest.upsert_document(
+                                replace(
+                                    previous,
+                                    source_path=path,
+                                    relative_path=relative,
+                                )
+                            )
                         skipped += 1
                         continue
 

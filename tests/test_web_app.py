@@ -113,10 +113,16 @@ def test_completion_uses_history_and_returns_plain_text_sources(
     monkeypatch,
 ) -> None:
     client = _client(monkeypatch, tmp_path)
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, str, str]] = []
 
-    def run(question: str, *, conversation_context: str, on_event=None):
-        calls.append((question, conversation_context))
+    def run(
+        question: str,
+        *,
+        conversation_context: str,
+        retrieval_context: str,
+        on_event=None,
+    ):
+        calls.append((question, conversation_context, retrieval_context))
         return _result(tmp_path, '**private**\n<img src="https://example.test/leak">')
 
     monkeypatch.setattr(web.runtime, "run", run)
@@ -138,6 +144,7 @@ def test_completion_uses_history_and_returns_plain_text_sources(
         (
             "текущий вопрос",
             "Пользователь:\nстарый вопрос\n\nАссистент:\nстарый ответ",
+            "Предыдущие вопросы пользователя:\n- старый вопрос",
         )
     ]
     content = response.json()["choices"][0]["message"]["content"]
@@ -150,7 +157,13 @@ def test_completion_uses_history_and_returns_plain_text_sources(
 def test_streaming_completion_uses_openai_sse_shape(tmp_path, monkeypatch) -> None:
     client = _client(monkeypatch, tmp_path)
 
-    def run(_question: str, *, conversation_context: str, on_event=None):
+    def run(
+        _question: str,
+        *,
+        conversation_context: str,
+        retrieval_context: str,
+        on_event=None,
+    ):
         assert on_event is not None
         on_event(
             PipelineEvent(
@@ -165,6 +178,14 @@ def test_streaming_completion_uses_openai_sse_shape(tmp_path, monkeypatch) -> No
                 label="Поиск контекста",
                 status="completed",
                 details={"index_hits": 3},
+            )
+        )
+        on_event(
+            PipelineEvent(
+                stage="retrieval.parent_context",
+                label="Сборка полноразмерного контекста документов",
+                status="completed",
+                details={"contexts": 2, "whole_documents": 1, "context_chars": 42_000},
             )
         )
         return _result(tmp_path)
@@ -188,6 +209,7 @@ def test_streaming_completion_uses_openai_sse_shape(tmp_path, monkeypatch) -> No
     assert "Ход выполнения" in response.text
     assert "Ищу релевантные фрагменты" in response.text
     assert "найдено фрагментов — 3" in response.text
+    assert "документов — 2, целиком — 1" in response.text
     assert "Ответ:" in response.text
     assert "data: [DONE]" in response.text
 
@@ -218,7 +240,13 @@ def test_completion_rejects_unknown_model_and_missing_user_message(
 def test_pipeline_failure_does_not_expose_exception_text(monkeypatch, tmp_path) -> None:
     client = _client(monkeypatch, tmp_path)
 
-    def fail(_question: str, *, conversation_context: str, on_event=None):
+    def fail(
+        _question: str,
+        *,
+        conversation_context: str,
+        retrieval_context: str,
+        on_event=None,
+    ):
         raise RuntimeError(r"secret from D:\Nextcloud\private.docx")
 
     monkeypatch.setattr(web.runtime, "run", fail)
@@ -245,7 +273,13 @@ def test_streaming_failure_reports_safe_stage_and_diagnostic_id(
 ) -> None:
     client = _client(monkeypatch, tmp_path)
 
-    def fail(_question: str, *, conversation_context: str, on_event=None):
+    def fail(
+        _question: str,
+        *,
+        conversation_context: str,
+        retrieval_context: str,
+        on_event=None,
+    ):
         assert on_event is not None
         on_event(
             PipelineEvent(
@@ -313,15 +347,54 @@ def test_completion_requires_signed_user_and_chat_identity(monkeypatch, tmp_path
     assert forged.json() == {"detail": "invalid_user_identity"}
 
 
+def test_openwebui_follow_up_task_is_not_added_to_chat_state(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    client = _client(monkeypatch, tmp_path)
+
+    def unexpected_run(*_args, **_kwargs):
+        raise AssertionError("follow-up housekeeping must not call the RAG pipeline")
+
+    monkeypatch.setattr(web.runtime, "run", unexpected_run)
+    response = client.post(
+        "/v1/chat/completions",
+        headers=_headers("user-a", "chat-a"),
+        json={
+            "model": "universal-rag",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "### Task:\nSuggest 3-5 relevant follow-up questions",
+                }
+            ],
+            "metadata": {"task": "follow_up_generation", "chat_id": "chat-a"},
+        },
+    )
+
+    assert response.status_code == 200
+    content = response.json()["choices"][0]["message"]["content"]
+    assert json.loads(content) == {"follow_ups": []}
+    assert web._chat_state_store().history(
+        web.ConversationKey("user-a", "chat-a")
+    ) == ()
+
+
 def test_persisted_context_is_isolated_by_user_and_reused_for_incremental_requests(
     monkeypatch,
     tmp_path,
 ) -> None:
     client = _client(monkeypatch, tmp_path)
-    contexts: list[str] = []
+    contexts: list[tuple[str, str]] = []
 
-    def run(question: str, *, conversation_context: str, on_event=None):
-        contexts.append(conversation_context)
+    def run(
+        question: str,
+        *,
+        conversation_context: str,
+        retrieval_context: str,
+        on_event=None,
+    ):
+        contexts.append((conversation_context, retrieval_context))
         return _result(tmp_path, answer=f"ответ на {question}")
 
     monkeypatch.setattr(web.runtime, "run", run)
@@ -351,7 +424,8 @@ def test_persisted_context_is_isolated_by_user_and_reused_for_incremental_reques
     )
 
     assert first.status_code == second.status_code == other_user.status_code == 200
-    assert contexts[0] == ""
-    assert "первый вопрос" in contexts[1]
-    assert "ответ на первый вопрос" in contexts[1]
-    assert contexts[2] == ""
+    assert contexts[0] == ("", "")
+    assert "первый вопрос" in contexts[1][0]
+    assert "ответ на первый вопрос" in contexts[1][0]
+    assert contexts[1][1] == "Предыдущие вопросы пользователя:\n- первый вопрос"
+    assert contexts[2] == ("", "")

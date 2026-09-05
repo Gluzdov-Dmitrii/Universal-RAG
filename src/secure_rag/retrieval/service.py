@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path, PurePosixPath
+
 import numpy as np
 
 from ..config import AppConfig
@@ -89,7 +91,10 @@ class Retriever:
             on_event,
             "retrieval.source_read",
             "Чтение и проверка найденных исходных документов",
-            {"candidate_count": len(points)},
+            {
+                "candidate_count": len(points),
+                "document_limit": self.config.retrieval.max_source_documents,
+            },
         ) as details:
             source_hashes = 0
             extractions = 0
@@ -110,9 +115,14 @@ class Retriever:
                     continue
                 if str(payload.get("index_signature", "")) != expected_signature:
                     continue
+                if (
+                    document_id not in text_cache
+                    and len(text_cache) >= self.config.retrieval.max_source_documents
+                ):
+                    continue
                 try:
-                    resolved_path = document.source_path.resolve()
-                    if not resolved_path.is_relative_to(self.config.paths.source_root):
+                    resolved_path = self._current_source_path(document.relative_path)
+                    if resolved_path is None:
                         continue
                     stat = resolved_path.stat()
                     if stat.st_size != document.size or stat.st_mtime_ns != document.mtime_ns:
@@ -283,8 +293,8 @@ class Retriever:
                 ):
                     continue
                 try:
-                    path = document.source_path.resolve(strict=True)
-                    if not path.is_relative_to(self.config.paths.source_root):
+                    path = self._current_source_path(document.relative_path)
+                    if path is None:
                         continue
                     before = path.stat()
                     if (
@@ -354,3 +364,17 @@ class Retriever:
                     )
             details["accepted_hits"] = len(expanded)
         return expanded
+
+    def _current_source_path(self, relative_path: str) -> Path | None:
+        """Resolve a manifest identity against the current synchronized source root."""
+
+        normalized = relative_path.replace("\\", "/")
+        relative = PurePosixPath(normalized)
+        if relative.is_absolute() or not relative.parts or ".." in relative.parts:
+            return None
+        try:
+            source_root = self.config.paths.source_root.resolve(strict=True)
+            candidate = (source_root / Path(*relative.parts)).resolve(strict=True)
+        except OSError:
+            return None
+        return candidate if candidate.is_relative_to(source_root) and candidate.is_file() else None

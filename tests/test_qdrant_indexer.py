@@ -191,6 +191,45 @@ def test_incremental_index_and_filtered_retrieval(tmp_path) -> None:
         assert store.count() == 0
 
 
+def test_incremental_index_repairs_paths_after_source_root_move(tmp_path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    source_file = source / "safe.txt"
+    source_file.write_text(
+        "Платонов работал над книгой проекта по транспортному направлению.",
+        encoding="utf-8",
+    )
+    base = load_config()
+    runtime_root = (tmp_path / "runtime").resolve()
+    config = replace(
+        base,
+        paths=replace(base.paths, source_root=source.resolve(), runtime_root=runtime_root),
+    )
+    config.ensure_runtime()
+    embedder = HashingEmbedder(64)
+    with (
+        ManifestStore(config.manifest_path) as manifest,
+        QdrantStore(config.qdrant_path, "moved_source", embedder.dimension) as store,
+    ):
+        assert Indexer(config, embedder, manifest, store).run().indexed == 1
+
+        moved_source = tmp_path / "moved-source"
+        source.rename(moved_source)
+        moved_config = replace(
+            config,
+            paths=replace(config.paths, source_root=moved_source.resolve()),
+        )
+        report = Indexer(moved_config, embedder, manifest, store).run()
+        document = manifest.all_documents()[0]
+        hits = Retriever(moved_config, embedder, manifest, store).search("Платонов")
+
+    assert report.skipped == 1
+    assert report.indexed == 0
+    assert document.source_path == moved_source / "safe.txt"
+    assert len(hits) == 1
+    assert "книгой проекта" in hits[0].text
+
+
 def test_new_xlsx_persists_sheet_location_in_manifest_and_qdrant(tmp_path) -> None:
     source = (tmp_path / "source").resolve()
     source.mkdir()

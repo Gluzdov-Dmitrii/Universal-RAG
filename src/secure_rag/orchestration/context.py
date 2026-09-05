@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import hashlib
 import re
+from collections import OrderedDict
 from pathlib import Path
+from threading import RLock
 
-from ..domain.models import CitationLocation, DocumentSource, MarkerState, RetrievalHit
+from ..domain.models import (
+    CitationLocation,
+    DocumentSource,
+    EntitySpan,
+    MarkerState,
+    RetrievalHit,
+)
 from ..sanitization.core import PrivacyGateway, merge_spans
 from ..sanitization.normalization import canonical_marker_value
 from .events import EventCallback, timed_stage
@@ -11,11 +20,67 @@ from .events import EventCallback, timed_stage
 _FILE_TYPE_RE = re.compile(r"^[a-z0-9]{1,10}$")
 
 
+class ProcessMemorySpanCache:
+    """Bounded text-free cache of NER coordinates for immutable document revisions."""
+
+    def __init__(self, *, max_entries: int = 64, max_total_spans: int = 250_000) -> None:
+        if max_entries < 1 or max_total_spans < 1:
+            raise ValueError("span_cache_limits_must_be_positive")
+        self.max_entries = max_entries
+        self.max_total_spans = max_total_spans
+        self._entries: OrderedDict[tuple[str, ...], tuple[EntitySpan, ...]] = OrderedDict()
+        self._total_spans = 0
+        self._lock = RLock()
+
+    @staticmethod
+    def _key(hit: RetrievalHit) -> tuple[str, ...]:
+        digest = hashlib.sha256(hit.text.encode("utf-8")).hexdigest()
+        return (
+            hit.document_id,
+            hit.revision,
+            hit.context_scope,
+            str(hit.start),
+            str(hit.end),
+            digest,
+        )
+
+    def load(self, hit: RetrievalHit) -> tuple[EntitySpan, ...] | None:
+        key = self._key(hit)
+        with self._lock:
+            spans = self._entries.get(key)
+            if spans is not None:
+                self._entries.move_to_end(key)
+            return spans
+
+    def store(self, hit: RetrievalHit, spans: list[EntitySpan]) -> None:
+        if len(spans) > self.max_total_spans:
+            return
+        key = self._key(hit)
+        value = tuple(spans)
+        with self._lock:
+            previous = self._entries.pop(key, None)
+            if previous is not None:
+                self._total_spans -= len(previous)
+            while self._entries and (
+                len(self._entries) >= self.max_entries
+                or self._total_spans + len(value) > self.max_total_spans
+            ):
+                _, evicted = self._entries.popitem(last=False)
+                self._total_spans -= len(evicted)
+            self._entries[key] = value
+            self._total_spans += len(value)
+
+
 class ContextAssembler:
     """Build one marker namespace and local provenance across retrieval iterations."""
 
-    def __init__(self, gateway: PrivacyGateway) -> None:
+    def __init__(
+        self,
+        gateway: PrivacyGateway,
+        span_cache: ProcessMemorySpanCache | None = None,
+    ) -> None:
         self.gateway = gateway
+        self.span_cache = span_cache
 
     def sanitize(
         self,
@@ -31,8 +96,33 @@ class ContextAssembler:
             "NER и regex: поиск чувствительных сущностей",
             {"fields": len(raw_fields)},
         ) as details:
-            detected = [self.gateway.detect_spans(text) for text in raw_fields]
+            detected: list[list[EntitySpan] | None] = [None] * len(raw_fields)
+            missing_indices = [0]
+            missing_texts = [question]
+            cache_hits = 0
+            cache_misses = 0
+            for index, hit in enumerate(hits, start=1):
+                cached = self.span_cache.load(hit) if self.span_cache is not None else None
+                if cached is None:
+                    cache_misses += 1
+                    missing_indices.append(index)
+                    missing_texts.append(hit.text)
+                else:
+                    cache_hits += 1
+                    detected[index] = list(cached)
+            for index, spans in zip(
+                missing_indices,
+                self.gateway.detect_many(missing_texts),
+                strict=True,
+            ):
+                detected[index] = spans
+                if index > 0 and self.span_cache is not None:
+                    self.span_cache.store(hits[index - 1], spans)
+            resolved_detected = [spans if spans is not None else [] for spans in detected]
+            detected = resolved_detected
             details["detected_spans"] = sum(len(spans) for spans in detected)
+            details["span_cache_hits"] = cache_hits
+            details["span_cache_misses"] = cache_misses
 
         with timed_stage(
             on_event,

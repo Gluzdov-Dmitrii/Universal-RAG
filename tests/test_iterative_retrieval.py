@@ -195,6 +195,58 @@ def test_retrieval_control_is_exact_and_bounded() -> None:
         )
 
 
+def test_malformed_provider_retrieval_control_returns_local_answer(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    source_root = (tmp_path / "source").resolve()
+    source_root.mkdir()
+    base = load_config()
+    config = replace(
+        base,
+        paths=replace(
+            base.paths,
+            source_root=source_root,
+            runtime_root=(tmp_path / "runtime").resolve(),
+        ),
+    )
+    config.ensure_runtime()
+
+    class EmptyRetriever:
+        embedder = FakeEmbedder()
+
+        @staticmethod
+        def search(_query, top_k=None, *, on_event=None):
+            del top_k, on_event
+            return []
+
+    class MalformedProvider:
+        @staticmethod
+        def answer_payload(_payload: str, _request_id: str) -> str:
+            return "explanation\n<retrieval_request>{}</retrieval_request>"
+
+    monkeypatch.setattr(
+        SecureRagPipeline,
+        "_create_provider",
+        lambda _self, _name: MalformedProvider(),
+    )
+    events = []
+    result = SecureRagPipeline(
+        config,
+        EmptyRetriever(),
+        PrivacyGateway(PersonDetector()),
+        FakeManifest(),
+    ).run("Простой вопрос", provider="responses", on_event=events.append)
+
+    assert "Недостаточно данных" in result.restored_output.read_text(encoding="utf-8")
+    completed_call = next(
+        event
+        for event in events
+        if event.stage == "provider.call" and event.status == "completed"
+    )
+    assert completed_call.details["retrieval_control_invalid"] is True
+
+
 def test_iterative_retrieval_stops_with_local_insufficient_answer(
     tmp_path, monkeypatch
 ) -> None:

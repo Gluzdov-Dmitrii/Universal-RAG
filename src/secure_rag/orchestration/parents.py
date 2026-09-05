@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ..config import AppConfig
 from ..domain.models import RetrievalHit, TextLocation
+from ..ingestion.cache import ExtractedTextCacheBackend
 from ..ingestion.extractors import (
     ExtractedDocument,
     ExtractionError,
@@ -23,8 +24,13 @@ _TABLE_HEADER_CHARS = 3_000
 class ParentContextBuilder:
     """Turn retrieval chunks into bounded, source-verified document context."""
 
-    def __init__(self, config: AppConfig) -> None:
+    def __init__(
+        self,
+        config: AppConfig,
+        extracted_cache: ExtractedTextCacheBackend | None = None,
+    ) -> None:
         self.config = config
+        self.extracted_cache = extracted_cache
         self._cache: dict[tuple[Path, str], ExtractedDocument | None] = {}
 
     def build(
@@ -70,6 +76,7 @@ class ParentContextBuilder:
 
                 if (
                     not extracted.truncated
+                    and whole_documents < self.config.retrieval.max_whole_documents
                     and len(extracted.text)
                     <= self.config.retrieval.whole_document_max_chars
                     and len(extracted.text) <= remaining
@@ -127,7 +134,29 @@ class ParentContextBuilder:
             if file_sha256(path) != hit.revision:
                 self._cache[key] = None
                 return None
-            extracted = extract_document(path, self.config.ingestion)
+            extension = path.suffix.lower()
+            cacheable = (
+                self.extracted_cache is not None
+                and self.extracted_cache.allows_extension(extension)
+            )
+            try:
+                extracted = (
+                    self.extracted_cache.load(
+                        hit.document_id,
+                        hit.revision,
+                        extension,
+                        self.config.ingestion,
+                    )
+                    if cacheable
+                    else None
+                )
+            except ValueError:
+                extracted = None
+            if extracted is None:
+                extracted = extract_document(path, self.config.ingestion)
+                should_store = cacheable
+            else:
+                should_store = False
             after = path.stat()
             if (
                 after.st_size != before.st_size
@@ -136,6 +165,17 @@ class ParentContextBuilder:
             ):
                 self._cache[key] = None
                 return None
+            if should_store:
+                try:
+                    self.extracted_cache.store(
+                        hit.document_id,
+                        hit.revision,
+                        extension,
+                        self.config.ingestion,
+                        extracted,
+                    )
+                except (OSError, ValueError):
+                    pass
             self._cache[key] = extracted
             return extracted
         except (OSError, ExtractionError):

@@ -58,12 +58,14 @@ class RetrievalConfig:
     max_iterations: int = 3
     max_queries_per_iteration: int = 3
     max_contexts: int = 24
+    max_source_documents: int = 2
     rewrite_min_similarity: float = 0.55
     adjacent_chunk_radius: int = 1
     parent_context_enabled: bool = True
-    whole_document_max_chars: int = 80_000
-    logical_parent_max_chars: int = 30_000
-    total_context_max_chars: int = 180_000
+    max_whole_documents: int = 1
+    whole_document_max_chars: int = 160_000
+    logical_parent_max_chars: int = 40_000
+    total_context_max_chars: int = 240_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -359,6 +361,10 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
                 "SECURE_RAG_MAX_CONTEXTS",
                 int(retrieval.get("max_contexts", 24)),
             ),
+            max_source_documents=_env_int(
+                "SECURE_RAG_MAX_SOURCE_DOCUMENTS",
+                int(retrieval.get("max_source_documents", 2)),
+            ),
             rewrite_min_similarity=_env_float(
                 "SECURE_RAG_REWRITE_MIN_SIMILARITY",
                 float(retrieval.get("rewrite_min_similarity", 0.55)),
@@ -371,17 +377,21 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
                 "SECURE_RAG_PARENT_CONTEXT_ENABLED",
                 bool(retrieval.get("parent_context_enabled", True)),
             ),
+            max_whole_documents=_env_int(
+                "SECURE_RAG_MAX_WHOLE_DOCUMENTS",
+                int(retrieval.get("max_whole_documents", 1)),
+            ),
             whole_document_max_chars=_env_int(
                 "SECURE_RAG_WHOLE_DOCUMENT_MAX_CHARS",
-                int(retrieval.get("whole_document_max_chars", 80_000)),
+                int(retrieval.get("whole_document_max_chars", 160_000)),
             ),
             logical_parent_max_chars=_env_int(
                 "SECURE_RAG_LOGICAL_PARENT_MAX_CHARS",
-                int(retrieval.get("logical_parent_max_chars", 30_000)),
+                int(retrieval.get("logical_parent_max_chars", 40_000)),
             ),
             total_context_max_chars=_env_int(
                 "SECURE_RAG_TOTAL_CONTEXT_MAX_CHARS",
-                int(retrieval.get("total_context_max_chars", 180_000)),
+                int(retrieval.get("total_context_max_chars", 240_000)),
             ),
         ),
         sanitization=SanitizationConfig(
@@ -450,12 +460,16 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         raise ValueError("retrieval.max_queries_per_iteration must be between 1 and 5")
     if not config.retrieval.top_k <= config.retrieval.max_contexts <= 100:
         raise ValueError("retrieval.max_contexts must be between top_k and 100")
+    if not 1 <= config.retrieval.max_source_documents <= 10:
+        raise ValueError("retrieval.max_source_documents must be between 1 and 10")
     if not 0.0 <= config.retrieval.rewrite_min_similarity <= 1.0:
         raise ValueError("retrieval.rewrite_min_similarity must be between 0 and 1")
     if not 0 <= config.retrieval.adjacent_chunk_radius <= 3:
         raise ValueError("retrieval.adjacent_chunk_radius must be between 0 and 3")
     if config.retrieval.whole_document_max_chars < 1_000:
         raise ValueError("retrieval.whole_document_max_chars must be at least 1000")
+    if not 1 <= config.retrieval.max_whole_documents <= 5:
+        raise ValueError("retrieval.max_whole_documents must be between 1 and 5")
     if config.retrieval.logical_parent_max_chars < 1_000:
         raise ValueError("retrieval.logical_parent_max_chars must be at least 1000")
     if (

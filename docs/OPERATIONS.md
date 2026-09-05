@@ -27,6 +27,11 @@ Live `.sqlite`, Qdrant snapshots, Open WebUI database, документы и в�
 `SECURE_RAG_PIPELINE_EVENT_DIR`. Ошибка записи диагностического журнала логируется, но не
 прерывает успешно выполняющийся RAG-запрос.
 
+Open WebUI хранит исходный transcript в своём volume. Backend хранит его серверное зеркало и
+retrieval runs в `runtime/data/sessions/chat-state.sqlite`. Запросы интерфейса с
+`metadata.task` изолируются и не считаются пользовательскими репликами. Журнал API и JSONL
+этапов намеренно не содержат тексты запросов.
+
 ## Создание snapshot
 
 Сохраняйте backup на другом диске или защищённой сетевой папке вне clone:

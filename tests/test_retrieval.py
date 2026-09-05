@@ -77,7 +77,9 @@ def test_retriever_derives_page_from_char_offsets_without_reindex_metadata(
     stat = path.stat()
     record = DocumentRecord(
         document_id="doc-legacy",
-        source_path=path,
+        # The synchronized source root moved after indexing. Relative identity remains
+        # stable and retrieval must resolve it against the current configured root.
+        source_path=tmp_path / "retired-source" / "report.pdf",
         relative_path="report.pdf",
         extension=".pdf",
         size=stat.st_size,
@@ -116,6 +118,7 @@ def test_retriever_derives_page_from_char_offsets_without_reindex_metadata(
     assert hits[0].location_kind == "page"
     assert hits[0].location_start == "2"
     assert hits[0].location_end is None
+    assert hits[0].source_path == path
 
 
 def test_retrieval_normalizes_terminal_punctuation_before_embedding(tmp_path) -> None:
@@ -151,6 +154,73 @@ def test_retrieval_normalizes_terminal_punctuation_before_embedding(tmp_path) ->
         if event.stage == "retrieval.query_embedding" and event.status == "completed"
     )
     assert completed.details["query_normalized"] is True
+
+
+def test_retriever_bounds_verified_source_documents(tmp_path) -> None:
+    source = (tmp_path / "source").resolve()
+    source.mkdir()
+    base = load_config()
+    config = replace(
+        base,
+        paths=replace(
+            base.paths,
+            source_root=source,
+            runtime_root=(tmp_path / "runtime").resolve(),
+        ),
+        retrieval=replace(base.retrieval, max_source_documents=2),
+    )
+    embedder = RecordingEmbedder()
+    signature = compute_index_signature(config, embedder.model_version)
+    records = []
+    points = []
+    with ManifestStore(config.manifest_path) as manifest:
+        for index in range(3):
+            path = source / f"document-{index}.txt"
+            text = f"Документ номер {index}"
+            path.write_text(text, encoding="utf-8")
+            stat = path.stat()
+            revision = file_sha256(path)
+            record = DocumentRecord(
+                document_id=f"doc-{index}",
+                source_path=path,
+                relative_path=path.name,
+                extension=".txt",
+                size=stat.st_size,
+                mtime_ns=stat.st_mtime_ns,
+                revision=revision,
+                status="indexed",
+                indexed_revision=revision,
+                index_signature=signature,
+            )
+            records.append(record)
+            manifest.upsert_document(record)
+            points.append(
+                SimpleNamespace(
+                    id=f"chunk-{index}",
+                    score=1.0 - index / 10,
+                    payload={
+                        "document_id": record.document_id,
+                        "revision": revision,
+                        "chunk_id": f"chunk-{index}",
+                        "ordinal": 0,
+                        "char_start": 0,
+                        "char_end": len(text),
+                        "embedding_version": embedder.model_version,
+                        "index_signature": signature,
+                    },
+                )
+            )
+
+        class ThreeDocumentVectorStore:
+            @staticmethod
+            def search(*_args, **_kwargs):
+                return points
+
+        hits = Retriever(config, embedder, manifest, ThreeDocumentVectorStore()).search(
+            "документ"
+        )
+
+    assert [hit.document_id for hit in hits] == [record.document_id for record in records[:2]]
 
 
 def test_retriever_expands_authorized_citation_to_adjacent_chunks(tmp_path) -> None:

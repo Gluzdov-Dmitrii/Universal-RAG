@@ -112,11 +112,36 @@ class TransformersNerDetector:
         )
 
     def detect(self, text: str) -> list[EntitySpan]:
-        if not text.strip():
-            return []
-        best: dict[tuple[int, int, str], EntitySpan] = {}
-        for window_start, window_end in self._character_windows(text):
-            predictions = self._pipeline(text[window_start:window_end])
+        return self.detect_many([text])[0]
+
+    def detect_many(self, texts: list[str]) -> list[list[EntitySpan]]:
+        """Run all token windows as GPU batches while preserving field offsets."""
+
+        results: list[dict[tuple[int, int, str], EntitySpan]] = [
+            {} for _ in texts
+        ]
+        windows: list[tuple[int, int, int, str]] = []
+        for text_index, text in enumerate(texts):
+            if not text.strip():
+                continue
+            windows.extend(
+                (text_index, window_start, window_end, text[window_start:window_end])
+                for window_start, window_end in self._character_windows(text)
+            )
+        if not windows:
+            return [[] for _ in texts]
+        raw_predictions = self._pipeline(
+            [window[3] for window in windows],
+            batch_size=16,
+        )
+        if raw_predictions and isinstance(raw_predictions[0], dict):
+            raw_predictions = [raw_predictions]
+        for (text_index, window_start, _window_end, _text), predictions in zip(
+            windows,
+            raw_predictions,
+            strict=True,
+        ):
+            best = results[text_index]
             for prediction in predictions:
                 score = float(prediction.get("score", 0.0))
                 if score < self.threshold:
@@ -148,7 +173,7 @@ class TransformersNerDetector:
                 key = (start, end, label)
                 if key not in best or best[key].score < score:
                     best[key] = span
-        return list(best.values())
+        return [list(best.values()) for best in results]
 
     def _character_windows(self, text: str) -> list[tuple[int, int]]:
         encoded = self._tokenizer(
@@ -184,7 +209,17 @@ class EnsembleDetector:
         self.name = "ensemble"
 
     def detect(self, text: str) -> list[EntitySpan]:
-        spans: list[EntitySpan] = []
+        return self.detect_many([text])[0]
+
+    def detect_many(self, texts: list[str]) -> list[list[EntitySpan]]:
+        spans: list[list[EntitySpan]] = [[] for _ in texts]
         for detector in self.detectors:
-            spans.extend(detector.detect(text))
+            bulk_detect = getattr(detector, "detect_many", None)
+            detected = (
+                bulk_detect(texts)
+                if callable(bulk_detect)
+                else [detector.detect(text) for text in texts]
+            )
+            for target, values in zip(spans, detected, strict=True):
+                target.extend(values)
         return spans

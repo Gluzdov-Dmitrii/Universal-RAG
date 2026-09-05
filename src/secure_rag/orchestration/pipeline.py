@@ -16,7 +16,7 @@ from ..retrieval.attachments import attachment_hits, resolve_attachment_path
 from ..retrieval.embeddings import QUERY_NORMALIZATION_VERSION
 from ..retrieval.service import Retriever
 from ..sanitization.core import PrivacyGateway
-from .context import ContextAssembler
+from .context import ContextAssembler, ProcessMemorySpanCache
 from .events import EventCallback, PipelineEvent, emit_event, timed_stage
 from .parents import ParentContextBuilder
 
@@ -34,11 +34,12 @@ class SecureRagPipeline:
         gateway: PrivacyGateway,
         manifest: ManifestStore,
         provider_factory: ProviderFactory | None = None,
+        span_cache: ProcessMemorySpanCache | None = None,
     ) -> None:
         self.config = config
         self.retriever = retriever
         self.gateway = gateway
-        self.context_assembler = ContextAssembler(gateway)
+        self.context_assembler = ContextAssembler(gateway, span_cache=span_cache)
         self.manifest = manifest
         self.bridge = BridgeManager(config)
         self.provider_factory = provider_factory or ProviderFactory(config)
@@ -51,14 +52,17 @@ class SecureRagPipeline:
         attachment_path: str | Path | None = None,
         on_event: EventCallback | None = None,
         conversation_context: str = "",
+        retrieval_context: str = "",
     ) -> BridgeResult:
         normalized_context = conversation_context.strip()
+        normalized_retrieval_context = retrieval_context.strip()
         retrieval_question = question
         provider_question = question
-        if normalized_context:
+        if normalized_retrieval_context:
             retrieval_question = (
-                f"{question}\n\nПредыдущий контекст диалога:\n{normalized_context}"
+                f"{normalized_retrieval_context}\n\nТекущий вопрос пользователя:\n{question}"
             )
+        if normalized_context:
             provider_question = (
                 "Предыдущий контекст диалога:\n"
                 f"{normalized_context}\n\nТекущий вопрос пользователя:\n{question}"
@@ -70,6 +74,7 @@ class SecureRagPipeline:
             {
                 "question_chars": len(question),
                 "conversation_context_chars": len(normalized_context),
+                "retrieval_context_chars": len(normalized_retrieval_context),
                 "attachment_provided": bool(str(attachment_path or "").strip()),
             },
         ) as details:
@@ -108,7 +113,10 @@ class SecureRagPipeline:
             )
             hits = self._merge_hits(direct_hits, hits)
         hits = hits[: self.config.retrieval.max_contexts]
-        parent_builder = ParentContextBuilder(self.config)
+        parent_builder = ParentContextBuilder(
+            self.config,
+            extracted_cache=getattr(self.retriever, "extracted_cache", None),
+        )
         context_hits = parent_builder.build(hits, on_event=on_event)
 
         state = MarkerState()
@@ -189,10 +197,18 @@ class SecureRagPipeline:
                     result.request_id,
                 )
                 PrivacyGateway.validate_outbound(marked_answer, state)
-                control = parse_retrieval_request(
-                    marked_answer,
-                    max_queries=self.config.retrieval.max_queries_per_iteration,
-                )
+                try:
+                    control = parse_retrieval_request(
+                        marked_answer,
+                        max_queries=self.config.retrieval.max_queries_per_iteration,
+                    )
+                except ValueError:
+                    # A malformed provider control message is neither a safe answer nor
+                    # a reason to fail the user's whole chat request. Fail closed with a
+                    # local answer while preserving the diagnostic stage.
+                    details["retrieval_control_invalid"] = True
+                    control = None
+                    marked_answer = _INSUFFICIENT_CONTEXT
                 details["output_chars"] = len(marked_answer)
                 details["retrieval_requested"] = control is not None
                 if control is None:

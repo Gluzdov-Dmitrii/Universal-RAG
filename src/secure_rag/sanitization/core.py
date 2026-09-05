@@ -103,6 +103,15 @@ class PrivacyGateway:
     ) -> list[EntitySpan]:
         return merge_spans([*self.detector.detect(text), *extra_spans])
 
+    def detect_many(self, texts: list[str]) -> list[list[EntitySpan]]:
+        bulk_detect = getattr(self.detector, "detect_many", None)
+        detected = (
+            bulk_detect(texts)
+            if callable(bulk_detect)
+            else [self.detector.detect(text) for text in texts]
+        )
+        return [merge_spans(spans) for spans in detected]
+
     def propagate_known(
         self,
         text: str,
