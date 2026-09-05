@@ -22,7 +22,7 @@ dependencies = [
   "python-pptx>=1.0,<2",
   "PyYAML>=6.0,<7",
   "qdrant-client>=1.15,<2",
-  "sentence-transformers>=5.1,<6",
+  "sentence-transformers>=5.1,<7",
   "torch>=2.6,<3",
   "transformers>=4.57,<5",
 ]
