@@ -9,6 +9,7 @@
 | Извлечение и embeddings | index signature | SQLite build history + Qdrant payload |
 | Vector index | collection name + Qdrant snapshot | Qdrant volume + backup storage |
 | Open WebUI | pinned image tag | Compose; состояние в отдельном volume |
+| История backend/retrieval | chat-state schema `user_version` | `runtime/data/sessions/chat-state.sqlite` |
 | Модели | model ID + pinned revision | `runtime/cache/models` или artifact storage |
 | Golden datasets/releases | будущие DVC/MLflow IDs | закрытое object storage, не Git |
 
@@ -23,13 +24,14 @@ Live `.sqlite`, Qdrant snapshots, Open WebUI database, документы и в�
 .\scripts\backup-state.ps1 -DestinationRoot E:\UniversalRagBackups
 ```
 
-Команда делает online backup manifest через SQLite Backup API, создаёт Qdrant collection
+Команда делает online backup manifest и chat state через SQLite Backup API, создаёт Qdrant collection
 snapshot, скачивает его из container storage и записывает `snapshot.json` со следующей связкой:
 
 - Git commit;
 - config schema;
 - Qdrant collection и snapshot name;
 - SHA-256 копии manifest;
+- SHA-256 копии chat state, если база уже создана;
 - timestamp.
 
 Чтобы также сохранить аккаунты, настройки и историю чатов, добавьте:
@@ -53,10 +55,11 @@ Open WebUI будет кратковременно остановлен, а ег
 1. checkout Git commit из `snapshot.json`;
 2. создать `.env` и проверить pinned model revisions;
 3. восстановить `documents.sqlite` в `runtime/data/manifest/`;
-4. загрузить Qdrant snapshot в collection с тем же именем;
-5. при наличии распаковать Open WebUI archive в новый пустой volume;
-6. выполнить `doctor`, проверить counts/signature и тестовый retrieval;
-7. только после проверки переключать пользователей на восстановленный экземпляр.
+4. восстановить `chat-state.sqlite` в `runtime/data/sessions/`, если он есть в snapshot;
+5. загрузить Qdrant snapshot в collection с тем же именем;
+6. при наличии распаковать Open WebUI archive в новый пустой volume;
+7. выполнить `doctor`, проверить counts/signature, identity и multi-turn retrieval;
+8. только после проверки переключать пользователей на восстановленный экземпляр.
 
 Manifest и Qdrant snapshot должны восстанавливаться как одна логическая версия. Смешивание
 SQLite из одного backup с vectors из другого может вернуть устаревшие offsets или неполный

@@ -5,7 +5,7 @@
 | Компонент | Runtime | Порт | Данные |
 |---|---|---:|---|
 | Open WebUI `v0.11.1` | Docker | `0.0.0.0:3000` | volume `universal_rag_open_webui_data` |
-| Universal RAG API | Windows/Python | `0.0.0.0:8000` | `runtime/state`, `runtime/diagnostics` |
+| Universal RAG API | Windows/Python | `0.0.0.0:8000` | `runtime/data/sessions`, `runtime/state`, `runtime/diagnostics` |
 | Qdrant `v1.19.0` | Docker | `127.0.0.1:6333` | volume `secure_rag_qdrant_storage` |
 | Manifest | SQLite | без порта | `runtime/data/manifest/documents.sqlite` |
 | Nextcloud corpus | Windows folder | без порта | путь из `SECURE_RAG_SOURCE_ROOT` |
@@ -36,6 +36,11 @@ http://host.docker.internal:8000/v1
 
 Её key берётся из `SECURE_RAG_API_KEY`. `WEBUI_SECRET_KEY` должен оставаться стабильным:
 его смена инвалидирует сессии и данные, зашифрованные Open WebUI.
+
+Compose включает `ENABLE_FORWARD_USER_INFO_HEADERS` и подписывает identity JWT тем же
+закрытым host-to-host key. Chat completion без корректной подписи и
+`X-OpenWebUI-Chat-Id` отклоняется. Backend хранит ограниченную копию истории и retrieval state
+в `runtime/data/sessions/chat-state.sqlite`; Open WebUI остаётся источником полной истории.
 
 Встроенный retrieval Open WebUI отключён: документы индексирует Universal RAG, поэтому при
 первом запуске UI не загружает вторую embedding-модель и не создаёт параллельный индекс.

@@ -71,10 +71,21 @@ class ContextAssembler:
                         "chunk_id": hit.chunk_id,
                         "citation_ref": f"R{index:03d}",
                         "score": hit.score,
-                        "source_ref": hit.document_id,
                         "file_type": file_type,
                         "text": sanitized_text,
                     }
+                )
+            # A later field can teach the shared marker state a normalized alias that was
+            # absent when an earlier field was processed. Re-apply all learned aliases so
+            # multi-turn history cannot retain a known raw variant.
+            sanitized_question = self.gateway.propagate_state_markers(
+                sanitized_question,
+                state,
+            )
+            for context in contexts:
+                context["text"] = self.gateway.propagate_state_markers(
+                    str(context["text"]),
+                    state,
                 )
             details["marker_count"] = len(state.marker_to_value)
         return sanitized_question, contexts

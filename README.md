@@ -18,7 +18,8 @@ retrieval остаются на сервере компании; перед об
 ```mermaid
 flowchart LR
     U[Пользователи сети] -->|HTTP/HTTPS| W[Open WebUI]
-    W -->|Bearer key + OpenAI API| A[Universal RAG API]
+    W -->|Bearer key + signed user/chat identity| A[Universal RAG API]
+    A --> C[(SQLite chat state)]
     A --> R[Retrieval + sanitization]
     R --> Q[(Qdrant)]
     R --> S[(SQLite manifest)]
@@ -41,6 +42,7 @@ Open WebUI не получает прямой доступ к Nextcloud, Qdrant,
 - повторный multi-query retrieval и расширение соседних chunks по проверенному protocol;
 - OpenAI-совместимые `GET /v1/models` и `POST /v1/chat/completions`;
 - Open WebUI `v0.11.1` с постоянным volume для аккаунтов, настроек и истории;
+- серверное SQLite-состояние истории и retrieval по изолированным `user_id + chat_id`;
 - PowerShell lifecycle scripts, GitHub Actions CI и pull-based deployment на self-hosted runner.
 
 Это рабочая продуктовая база, но ещё не законченная DLP/ACL-платформа. Перед доступом разных
@@ -109,10 +111,16 @@ Universal RAG появляется в selector как модель `universal-ra
 Open WebUI хранит историю, поэтому его volume содержит исходные вопросы и восстановленные
 ответы и считается конфиденциальным.
 
-Текущий backend намеренно использует только последнее пользовательское сообщение. История
-видна пользователю и хранится в Open WebUI, но не пересылается в RAG/provider: это не позволяет
-случайно вернуть восстановленные значения из прошлого ответа за privacy boundary. Безопасный
-multi-turn context с повторной маркировкой — отдельный следующий этап.
+Open WebUI передаёт backend подписанный user identity и стабильный chat ID. Backend сверяет
+HS256-подпись, синхронизирует transcript в `runtime/data/sessions/chat-state.sqlite` и хранит
+там же историю retrieval-запросов и найденных источников. Состояние изолировано по
+`user_id + chat_id`, но не по модели: при переключении агента/модели внутри того же чата они
+видят один контекст. Другой пользователь с тем же chat ID этот контекст не получает.
+
+В модель передаётся ограниченное окно предыдущих сообщений. Восстановленные ответы повторно
+проходят локальную sanitization вместе с текущим вопросом; локальный footer с реальными путями
+источников из model context удаляется. Полная история остаётся в Open WebUI и серверной SQLite,
+а размеры окна и хранения ограничиваются переменными `SECURE_RAG_CHAT_*` из `.env.example`.
 
 Файлы, загруженные в стандартный Open WebUI uploader, пока не маршрутизируются в Universal
 RAG. Документы поступают через индексируемый Nextcloud-каталог. Произвольный доступ к desktop,
@@ -142,7 +150,7 @@ src/secure_rag/
 
 ```text
 runtime/
-├── data/          # SQLite manifest; embedded vectors только по явной настройке
+├── data/          # SQLite manifest/chat state; embedded vectors по явной настройке
 ├── state/         # Marker Vault и request workspaces
 ├── cache/         # модели и пересоздаваемые cache
 ├── diagnostics/   # безопасные логи и отчёты

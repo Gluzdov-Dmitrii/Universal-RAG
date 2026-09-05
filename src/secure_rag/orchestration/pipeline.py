@@ -49,13 +49,26 @@ class SecureRagPipeline:
         top_k: int | None = None,
         attachment_path: str | Path | None = None,
         on_event: EventCallback | None = None,
+        conversation_context: str = "",
     ) -> BridgeResult:
+        normalized_context = conversation_context.strip()
+        retrieval_question = question
+        provider_question = question
+        if normalized_context:
+            retrieval_question = (
+                f"{question}\n\nПредыдущий контекст диалога:\n{normalized_context}"
+            )
+            provider_question = (
+                "Предыдущий контекст диалога:\n"
+                f"{normalized_context}\n\nТекущий вопрос пользователя:\n{question}"
+            )
         with timed_stage(
             on_event,
             "request.validate",
             "Проверка запроса и локального файла",
             {
                 "question_chars": len(question),
+                "conversation_context_chars": len(normalized_context),
                 "attachment_provided": bool(str(attachment_path or "").strip()),
             },
         ) as details:
@@ -76,14 +89,18 @@ class SecureRagPipeline:
             "retrieval.total",
             "Поиск релевантного контекста",
         ) as details:
-            hits = self.retriever.search(question, top_k=top_k, on_event=on_event)
+            hits = self.retriever.search(
+                retrieval_question,
+                top_k=top_k,
+                on_event=on_event,
+            )
             details["index_hits"] = len(hits)
 
         if attachment is not None:
             direct_hits = attachment_hits(
                 self.config,
                 self.retriever.embedder,
-                question,
+                retrieval_question,
                 attachment,
                 top_k=top_k or self.config.retrieval.top_k,
                 on_event=on_event,
@@ -93,7 +110,7 @@ class SecureRagPipeline:
 
         state = MarkerState()
         sanitized_question, contexts = self.context_assembler.sanitize(
-            question,
+            provider_question,
             hits,
             state,
             on_event,
@@ -193,7 +210,7 @@ class SecureRagPipeline:
             assert control is not None
 
             new_hits = self._execute_retrieval_request(
-                question,
+                retrieval_question,
                 hits,
                 control,
                 state,
@@ -206,7 +223,7 @@ class SecureRagPipeline:
                 iteration + 1 if len(hits) > previous_count else max_iterations
             )
             sanitized_question, contexts = self.context_assembler.sanitize(
-                question,
+                provider_question,
                 hits,
                 state,
                 on_event,

@@ -155,11 +155,54 @@ class PrivacyGateway:
         return self.mark_literal(filename, "FILE", state)
 
     @staticmethod
+    def propagate_state_markers(text: str, state: MarkerState) -> str:
+        """Replace aliases learned from other fields without rewriting existing markers."""
+
+        marker_ranges = [(match.start(), match.end()) for match in MARKER_RE.finditer(text)]
+        candidates: list[tuple[int, int, str]] = []
+        for marker, value in state.marker_to_value.items():
+            for alias in state.marker_to_aliases.get(marker, {value}):
+                pattern = _known_value_pattern(alias)
+                if pattern is None:
+                    continue
+                for match in pattern.finditer(text):
+                    if any(
+                        match.start() < end and start < match.end()
+                        for start, end in marker_ranges
+                    ):
+                        continue
+                    candidates.append((match.start(), match.end(), marker))
+        accepted: list[tuple[int, int, str]] = []
+        occupied_until = -1
+        for start, end, marker in sorted(
+            candidates,
+            key=lambda item: (item[0], -(item[1] - item[0]), item[2]),
+        ):
+            if start < occupied_until:
+                continue
+            accepted.append((start, end, marker))
+            occupied_until = end
+        if not accepted:
+            return text
+        pieces: list[str] = []
+        cursor = 0
+        for start, end, marker in accepted:
+            pieces.extend((text[cursor:start], marker))
+            cursor = end
+        pieces.append(text[cursor:])
+        return "".join(pieces)
+
+    @staticmethod
     def validate_outbound(text: str, state: MarkerState) -> None:
+        # Marker counters can coincidentally equal a detected numeric value (for example
+        # raw "0001" inside [[ID_0001]]). Validate only text outside known marker tokens.
+        validation_text = MARKER_RE.sub("", text)
         leaked = []
         for marker, value in state.marker_to_value.items():
             candidates = state.marker_to_aliases.get(marker, {value})
-            if any(_contains_known_value(text, candidate) for candidate in candidates):
+            if any(
+                _contains_known_value(validation_text, candidate) for candidate in candidates
+            ):
                 leaked.append(marker)
         if leaked:
             raise ValueError("Outbound validation found a known unmarked value")

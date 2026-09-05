@@ -31,6 +31,10 @@ services:
       ENABLE_OPENAI_API: "true"
       ENABLE_OPENAI_API_PASSTHROUGH: "false"
       ENABLE_VALVE_ENCRYPTION: "true"
+      # Forward a signed user identity plus X-OpenWebUI-Chat-Id. The backend
+      # rejects unsigned identity headers and isolates state by user + chat.
+      ENABLE_FORWARD_USER_INFO_HEADERS: "true"
+      FORWARD_USER_INFO_HEADER_JWT_SECRET: "${SECURE_RAG_API_KEY:?Set SECURE_RAG_API_KEY in .env}"
       OPENAI_API_BASE_URL: "http://host.docker.internal:${SECURE_RAG_API_PORT:-8000}/v1"
       OPENAI_API_KEY: "${SECURE_RAG_API_KEY:?Set SECURE_RAG_API_KEY in .env}"
       # Retrieval is implemented by Universal RAG. Keeping Open WebUI's built-in

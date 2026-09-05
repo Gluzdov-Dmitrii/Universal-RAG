@@ -116,6 +116,32 @@ def test_known_value_propagation_respects_word_boundaries() -> None:
     assert [(span.start, span.end) for span in spans] == [(start, start + 3)]
 
 
+def test_state_aliases_are_reapplied_without_rewriting_existing_markers() -> None:
+    gateway = PrivacyGateway(RegexDetector())
+    state = MarkerState()
+    marker = gateway.mark_literal("Компания Альфа", "ORG", state)
+    state.marker_to_aliases[marker].add("Альфа")
+
+    sanitized = gateway.propagate_state_markers(
+        f"{marker} подписала договор с Альфа.",
+        state,
+    )
+
+    assert sanitized == f"{marker} подписала договор с {marker}."
+    gateway.validate_outbound(sanitized, state)
+
+
+def test_outbound_validation_ignores_numeric_values_inside_marker_tokens() -> None:
+    gateway = PrivacyGateway(RegexDetector())
+    state = MarkerState()
+    marker = gateway.mark_literal("0001", "ID", state)
+
+    gateway.validate_outbound(f"Значение скрыто как {marker}.", state)
+
+    with pytest.raises(ValueError, match="known unmarked value"):
+        gateway.validate_outbound("Значение 0001 осталось открытым.", state)
+
+
 def test_transformer_policy_filters_disallowed_low_score_and_short_spans() -> None:
     detector = object.__new__(TransformersNerDetector)
     detector.name = "synthetic"

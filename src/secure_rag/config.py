@@ -150,6 +150,10 @@ class AppConfig:
         return self.data_path / "qdrant"
 
     @property
+    def chat_state_path(self) -> Path:
+        return self.data_path / "sessions" / "chat-state.sqlite"
+
+    @property
     def requests_path(self) -> Path:
         return self.state_path / "requests"
 
@@ -189,6 +193,7 @@ class AppConfig:
         for path in (
             self.manifest_path.parent,
             self.qdrant_path,
+            self.chat_state_path.parent,
             self.requests_path,
             self.marker_vault_path,
             self.model_cache_path / "embeddings",

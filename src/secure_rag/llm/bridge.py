@@ -175,7 +175,7 @@ class BridgeManager:
 
         PrivacyGateway.validate_outbound(sanitized_question, state)
         for item in contexts:
-            for key in ("citation_ref", "source_ref", "file_type", "text"):
+            for key in ("citation_ref", "file_type", "text"):
                 value = item.get(key)
                 if isinstance(value, str):
                     PrivacyGateway.validate_outbound(value, state)
@@ -265,9 +265,7 @@ class BridgeManager:
                     f"### Фрагмент {index}",
                     "",
                     f"Citation: {item['citation_ref']}",
-                    f"Opaque source: {item['source_ref']}",
                     f"File type: {item['file_type']}",
-                    f"Score: {float(item['score']):.6f}",
                     "",
                     "<untrusted_document>",
                     str(item["text"]),

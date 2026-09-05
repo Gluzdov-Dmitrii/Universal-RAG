@@ -11,27 +11,11 @@ class StubProvider:
         sanitized_question: str,
         sanitized_contexts: list[dict[str, object]],
     ) -> str:
-        lines = [
-            "# Тестовый mock-ответ",
-            "",
-            "Этот режим не генерирует выводы. Он показывает данные, которые получил бы provider.",
-            "",
-            f"Запрос: {sanitized_question}",
-            "",
-            "Найденный контекст:",
-        ]
-        if not sanitized_contexts:
-            lines.append("- Контекст не найден.")
+        # Only echo already-validated dynamic fields. Static natural-language labels can
+        # accidentally equal an entity learned from a previous turn and create a false leak.
+        sections = [sanitized_question]
         for item in sanitized_contexts:
             excerpt = str(item["text"])[:500].strip()
-            lines.extend(
-                [
-                    "",
-                    (
-                        f"- Источник {item['source_ref']}, type={item['file_type']}, "
-                        f"score={float(item['score']):.3f}"
-                    ),
-                    f"  {excerpt}",
-                ]
-            )
-        return "\n".join(lines).strip() + "\n"
+            if excerpt:
+                sections.append(excerpt)
+        return "\n\n".join(sections).strip() + "\n"

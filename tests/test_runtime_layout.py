@@ -17,6 +17,7 @@ def test_runtime_artifacts_are_grouped_by_lifetime(tmp_path) -> None:
 
     assert config.manifest_path == runtime_root / "data" / "manifest" / "documents.sqlite"
     assert config.qdrant_path == runtime_root / "data" / "qdrant"
+    assert config.chat_state_path == runtime_root / "data" / "sessions" / "chat-state.sqlite"
     assert config.requests_path == runtime_root / "state" / "requests"
     assert config.marker_vault_path == runtime_root / "state" / "marker-vault"
     assert config.model_cache_path == runtime_root / "cache" / "models"

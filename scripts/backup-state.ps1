@@ -47,6 +47,7 @@ c = load_config()
 print(json.dumps({
     "schema_version": c.schema_version,
     "manifest_path": str(c.manifest_path),
+    "chat_state_path": str(c.chat_state_path),
     "qdrant_url": c.qdrant.url,
     "collection": c.qdrant.collection_name,
 }))
@@ -70,6 +71,13 @@ finally:
 '@
 & $pythonPath -c $backupCode ([string]$config.manifest_path) $manifestDestination
 if ($LASTEXITCODE -ne 0) { throw "SQLite manifest backup failed." }
+
+$chatStateDestination = Join-Path $snapshotRoot "chat-state.sqlite"
+$chatStateIncluded = Test-Path -LiteralPath ([string]$config.chat_state_path) -PathType Leaf
+if ($chatStateIncluded) {
+    & $pythonPath -c $backupCode ([string]$config.chat_state_path) $chatStateDestination
+    if ($LASTEXITCODE -ne 0) { throw "SQLite chat state backup failed." }
+}
 
 $headers = @{}
 if ($env:SECURE_RAG_QDRANT_API_KEY) {
@@ -101,6 +109,11 @@ if ($IncludeOpenWebUI) {
 }
 
 $manifestHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifestDestination).Hash
+$chatStateHash = if ($chatStateIncluded) {
+    (Get-FileHash -Algorithm SHA256 -LiteralPath $chatStateDestination).Hash
+} else {
+    $null
+}
 $gitCommit = (& git -C $repoRoot rev-parse HEAD).Trim()
 $metadata = [ordered]@{
     created_at = [DateTimeOffset]::Now.ToString("o")
@@ -110,6 +123,8 @@ $metadata = [ordered]@{
     qdrant_snapshot = $snapshotName
     manifest_file = "documents.sqlite"
     manifest_sha256 = $manifestHash
+    chat_state_file = if ($chatStateIncluded) { "chat-state.sqlite" } else { $null }
+    chat_state_sha256 = $chatStateHash
     open_webui_included = [bool]$IncludeOpenWebUI
 }
 $metadata | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $snapshotRoot "snapshot.json") -Encoding UTF8

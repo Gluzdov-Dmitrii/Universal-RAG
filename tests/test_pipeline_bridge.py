@@ -136,7 +136,6 @@ def test_bridge_still_blocks_known_value_in_dynamic_context(tmp_path) -> None:
             "chunk_id": "opaque-chunk",
             "citation_ref": "R001",
             "score": 0.9,
-            "source_ref": "opaque-document",
             "file_type": "txt",
             "text": "Немаркированное значение Codex.",
         }

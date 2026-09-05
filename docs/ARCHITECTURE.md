@@ -107,12 +107,17 @@ retrieval-итерации продолжают этот thread. Thread запу
 
 Open WebUI обращается к backend через Bearer-authenticated OpenAI-compatible API. Он хранит
 пользователей, группы, model visibility и историю в собственном persistent volume. Open WebUI
-не получает Qdrant/SQLite/Nextcloud credentials. Текущий adapter использует последнее user
-message и не передаёт предыдущие восстановленные ответы provider-у. Перед использованием
-истории как model context требуется request-scoped повторная sanitization всего диалога.
-Передаваемые Open WebUI identity headers пока не участвуют в retrieval policy: первая серверная
-конфигурация использует общий access group `employees`. Дифференцированный доступ нельзя
-включать до реализации и тестирования identity-to-ACL mapping.
+не получает Qdrant/SQLite/Nextcloud credentials. Для каждого model request Open WebUI передаёт
+HS256-подписанный user identity и `X-OpenWebUI-Chat-Id`; backend проверяет подпись и хранит
+зеркало transcript плюс retrieval runs в `runtime/data/sessions/chat-state.sqlite`. Ключ
+изоляции — `(user_id, chat_id)`, поэтому смена модели/агента внутри чата не теряет контекст, а
+совпавший chat ID другого пользователя не открывает его состояние. Перед использованием
+истории как model context backend удаляет локальный footer источников, ограничивает окно и
+повторно выполняет request-scoped sanitization всего диалога.
+
+Identity пока не участвует в document retrieval policy: первая серверная конфигурация
+использует общий access group `employees`. Дифференцированный доступ нельзя включать до
+реализации и тестирования identity-to-ACL mapping.
 
 Внешняя LLM видит `file_type` и opaque `Rxxx`, но не filename/path. Для `xls/xlsx/csv` prompt
 разрешает запросить соседние chunks, если не хватает заголовков или строк. Реальные абсолютные
