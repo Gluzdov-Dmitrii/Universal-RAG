@@ -21,7 +21,7 @@ Live `.sqlite`, Qdrant snapshots, Open WebUI database, документы и в�
 Сохраняйте backup на другом диске или защищённой сетевой папке вне clone:
 
 ```powershell
-.\scripts\backup-state.ps1 -DestinationRoot E:\UniversalRagBackups
+.\scripts\backup-state.ps1 -DestinationRoot "D:\dev tests\Universal-RAG-backups"
 ```
 
 Команда делает online backup manifest и chat state через SQLite Backup API, создаёт Qdrant collection
@@ -38,7 +38,7 @@ snapshot, скачивает его из container storage и записывае
 
 ```powershell
 .\scripts\backup-state.ps1 `
-    -DestinationRoot E:\UniversalRagBackups `
+    -DestinationRoot "D:\dev tests\Universal-RAG-backups" `
     -IncludeOpenWebUI
 ```
 

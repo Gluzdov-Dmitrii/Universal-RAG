@@ -68,7 +68,7 @@ Compose включает `ENABLE_FORWARD_USER_INFO_HEADERS` и подписыв�
 
 ```powershell
 .\scripts\backup-state.ps1 `
-    -DestinationRoot D:\Universal-RAG-backups `
+    -DestinationRoot "D:\dev tests\Universal-RAG-backups" `
     -QdrantCollection secure_rag_pilot_e5_v1
 ```
 
