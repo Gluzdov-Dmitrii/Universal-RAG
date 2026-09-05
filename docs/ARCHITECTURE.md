@@ -78,6 +78,7 @@ raw local question
   → Qdrant filter: access_group AND goz=false AND is_final=true
   → opaque IDs + offsets
   → local source rehydration
+  → whole document OR bounded page/slide/sheet-aware logical parent
   → regex + NER + overlap resolution
   → Marker Vault + sanitized payload
   → no-tools Responses API / manual bridge / local stub
@@ -119,10 +120,16 @@ Identity пока не участвует в document retrieval policy: перв
 использует общий access group `employees`. Дифференцированный доступ нельзя включать до
 реализации и тестирования identity-to-ACL mapping.
 
-Внешняя LLM видит `file_type` и opaque `Rxxx`, но не filename/path. Для `xls/xlsx/csv` prompt
-разрешает запросить соседние chunks, если не хватает заголовков или строк. Реальные абсолютные
-пути собираются из проверенного `DocumentRecord.source_path`, сохраняются отдельно в локальном
-`sources.json` и показываются пользователю после выполнения. Во время extraction PDF pages,
+Внешняя LLM видит `file_type`, `context_scope` и opaque `Rxxx`, но не filename/path. Найденные
+маленькие chunks остаются поисковыми якорями. Перед privacy boundary система повторно проверяет
+SHA-256 исходника и передаёт документ целиком, если он укладывается в
+`whole_document_max_chars`. Для крупного источника она собирает ограниченный parent из
+релевантных pages/slides/sheets; в большой таблице сохраняются заголовок и область совпадения.
+Общий объём ограничен `total_context_max_chars`. Provider может запросить новые queries для
+упомянутых или связанных документов и дополнительный контекст вокруг уже разрешённого
+citation. Реальные абсолютные пути собираются из проверенного `DocumentRecord.source_path`,
+сохраняются отдельно в локальном `sources.json` и показываются пользователю после выполнения.
+Во время extraction PDF pages,
 PPTX slides и XLSX sheets получают диапазоны в нормализованном тексте. Chunk наследует
 пересекающуюся локацию (включая диапазон при переходе через границу), а `sources.json`
 связывает её с конкретным `Rxxx`. Для DOCX extractor читает сохранённый Word page count и

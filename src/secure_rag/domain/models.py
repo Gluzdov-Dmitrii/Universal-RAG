@@ -84,6 +84,7 @@ class RetrievalHit:
     location_kind: str = ""
     location_start: str | None = None
     location_end: str | None = None
+    context_scope: str = "retrieved_chunk"
 
 
 @dataclass(frozen=True, slots=True)

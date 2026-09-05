@@ -18,6 +18,7 @@ from ..retrieval.service import Retriever
 from ..sanitization.core import PrivacyGateway
 from .context import ContextAssembler
 from .events import EventCallback, PipelineEvent, emit_event, timed_stage
+from .parents import ParentContextBuilder
 
 _INSUFFICIENT_CONTEXT = (
     "Недостаточно данных в доступных локальных документах после исчерпания "
@@ -107,15 +108,17 @@ class SecureRagPipeline:
             )
             hits = self._merge_hits(direct_hits, hits)
         hits = hits[: self.config.retrieval.max_contexts]
+        parent_builder = ParentContextBuilder(self.config)
+        context_hits = parent_builder.build(hits, on_event=on_event)
 
         state = MarkerState()
         sanitized_question, contexts = self.context_assembler.sanitize(
             provider_question,
-            hits,
+            context_hits,
             state,
             on_event,
         )
-        sources = self.context_assembler.sources(hits)
+        sources = self.context_assembler.sources(context_hits)
         iterative_enabled = self.config.retrieval.iterative_enabled and resolved_provider in {
             "responses",
             "codex-local",
@@ -211,7 +214,7 @@ class SecureRagPipeline:
 
             new_hits = self._execute_retrieval_request(
                 retrieval_question,
-                hits,
+                context_hits,
                 control,
                 state,
                 top_k=top_k,
@@ -222,13 +225,14 @@ class SecureRagPipeline:
             iteration = (
                 iteration + 1 if len(hits) > previous_count else max_iterations
             )
+            context_hits = parent_builder.build(hits, on_event=on_event)
             sanitized_question, contexts = self.context_assembler.sanitize(
                 provider_question,
-                hits,
+                context_hits,
                 state,
                 on_event,
             )
-            sources = self.context_assembler.sources(hits)
+            sources = self.context_assembler.sources(context_hits)
             with timed_stage(
                 on_event,
                 "outbound.update",
@@ -248,7 +252,7 @@ class SecureRagPipeline:
     def _execute_retrieval_request(
         self,
         original_question: str,
-        current_hits: list[RetrievalHit],
+        current_context_hits: list[RetrievalHit],
         request: RetrievalRequest,
         state: MarkerState,
         *,
@@ -282,8 +286,11 @@ class SecureRagPipeline:
             citation_hits = []
             for citation in request.expand_citations:
                 index = int(citation[1:]) - 1
-                if 0 <= index < len(current_hits):
-                    citation_hits.append(current_hits[index])
+                if (
+                    0 <= index < len(current_context_hits)
+                    and current_context_hits[index].context_scope != "whole_document"
+                ):
+                    citation_hits.append(current_context_hits[index])
             if citation_hits:
                 discovered.extend(
                     self.retriever.expand_adjacent(

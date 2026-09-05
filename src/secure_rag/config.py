@@ -60,6 +60,10 @@ class RetrievalConfig:
     max_contexts: int = 24
     rewrite_min_similarity: float = 0.55
     adjacent_chunk_radius: int = 1
+    parent_context_enabled: bool = True
+    whole_document_max_chars: int = 80_000
+    logical_parent_max_chars: int = 30_000
+    total_context_max_chars: int = 180_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -363,6 +367,22 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
                 "SECURE_RAG_ADJACENT_CHUNK_RADIUS",
                 int(retrieval.get("adjacent_chunk_radius", 1)),
             ),
+            parent_context_enabled=_env_bool(
+                "SECURE_RAG_PARENT_CONTEXT_ENABLED",
+                bool(retrieval.get("parent_context_enabled", True)),
+            ),
+            whole_document_max_chars=_env_int(
+                "SECURE_RAG_WHOLE_DOCUMENT_MAX_CHARS",
+                int(retrieval.get("whole_document_max_chars", 80_000)),
+            ),
+            logical_parent_max_chars=_env_int(
+                "SECURE_RAG_LOGICAL_PARENT_MAX_CHARS",
+                int(retrieval.get("logical_parent_max_chars", 30_000)),
+            ),
+            total_context_max_chars=_env_int(
+                "SECURE_RAG_TOTAL_CONTEXT_MAX_CHARS",
+                int(retrieval.get("total_context_max_chars", 180_000)),
+            ),
         ),
         sanitization=SanitizationConfig(
             marker_pattern_version=int(_need(sanitization, "marker_pattern_version")),
@@ -434,6 +454,17 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         raise ValueError("retrieval.rewrite_min_similarity must be between 0 and 1")
     if not 0 <= config.retrieval.adjacent_chunk_radius <= 3:
         raise ValueError("retrieval.adjacent_chunk_radius must be between 0 and 3")
+    if config.retrieval.whole_document_max_chars < 1_000:
+        raise ValueError("retrieval.whole_document_max_chars must be at least 1000")
+    if config.retrieval.logical_parent_max_chars < 1_000:
+        raise ValueError("retrieval.logical_parent_max_chars must be at least 1000")
+    if (
+        config.retrieval.total_context_max_chars
+        < config.retrieval.logical_parent_max_chars
+    ):
+        raise ValueError(
+            "retrieval.total_context_max_chars must be at least logical_parent_max_chars"
+        )
     if not 1 <= config.generation.max_instruction_chars <= 100_000:
         raise ValueError("llm.max_instruction_chars must be between 1 and 100000")
     for model in config.sanitization.models:

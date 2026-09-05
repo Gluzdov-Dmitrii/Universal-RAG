@@ -30,8 +30,10 @@ flowchart LR
 
 Open WebUI не получает прямой доступ к Nextcloud, Qdrant, manifest или Marker Vault. Backend
 отдаёт браузеру только восстановленный ответ и локальную карту источников. Provider видит
-санитизированный вопрос, санитизированные фрагменты, тип файла и непрозрачные ссылки `R001`,
-но не видит реальный путь или имя файла.
+санитизированный вопрос, санитизированный исходный документ целиком либо ограниченный
+логический parent, тип файла и непрозрачные ссылки `R001`, но не видит реальный путь или имя
+файла. Маленькие chunks используются как поисковые якоря, а не как окончательная единица
+контекста для LLM.
 
 ## Что уже реализовано
 
@@ -39,7 +41,10 @@ Open WebUI не получает прямой доступ к Nextcloud, Qdrant,
 - E5 embeddings и Qdrant с обязательным policy-фильтром внутри vector search;
 - SQLite manifest с ревизиями документов, offsets и build history;
 - regex + NER, единое пространство маркеров, fail-closed outbound и строгий demarking;
-- повторный multi-query retrieval и расширение соседних chunks по проверенному protocol;
+- parent-document context с полным документом в пределах лимита и page/slide/sheet-aware
+  fallback для крупных источников;
+- повторный multi-query retrieval по смежным документам и расширение контекста citation по
+  проверенному protocol;
 - OpenAI-совместимые `GET /v1/models` и `POST /v1/chat/completions`;
 - Open WebUI `v0.11.1` с постоянным volume для аккаунтов, настроек и истории;
 - серверное SQLite-состояние истории и retrieval по изолированным `user_id + chat_id`;

@@ -72,6 +72,7 @@ class ContextAssembler:
                         "citation_ref": f"R{index:03d}",
                         "score": hit.score,
                         "file_type": file_type,
+                        "context_scope": hit.context_scope,
                         "text": sanitized_text,
                     }
                 )

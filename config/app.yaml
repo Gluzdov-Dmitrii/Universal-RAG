@@ -56,6 +56,12 @@ retrieval:
   max_contexts: 24
   rewrite_min_similarity: 0.55
   adjacent_chunk_radius: 1
+  # Small chunks are search anchors only. The provider receives a whole source
+  # document when it fits, otherwise a larger page/slide/sheet-aware parent.
+  parent_context_enabled: true
+  whole_document_max_chars: 80000
+  logical_parent_max_chars: 30000
+  total_context_max_chars: 180000
 
 llm:
   agent_workspace_root: "C:/Services/Universal-RAG-Agent"
