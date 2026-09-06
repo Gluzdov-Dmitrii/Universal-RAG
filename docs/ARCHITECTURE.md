@@ -105,6 +105,10 @@ markers запрещены, а cosine similarity не позволяет rewrite
 retrieval-итерации продолжают этот thread. Thread запускается с точным `cwd` отдельного
 `llm.agent_workspace_root`;
 разные requests не разделяют историю и marker namespace.
+Если этот `cwd` в точности совпадает с корнем сохранённого локального проекта Codex,
+приложение асинхронно связывает thread с его `projectId`; иначе thread остаётся в глобальном
+Recents. Эта UI-классификация не является privacy boundary и не заменяет серверную изоляцию
+по `(user_id, chat_id)`.
 
 Open WebUI обращается к backend через Bearer-authenticated OpenAI-compatible API. Он хранит
 пользователей, группы, model visibility и историю в собственном persistent volume. Open WebUI

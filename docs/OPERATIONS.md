@@ -32,6 +32,32 @@ retrieval runs в `runtime/data/sessions/chat-state.sqlite`. Запросы ин
 `metadata.task` изолируются и не считаются пользовательскими репликами. Журнал API и JSONL
 этапов намеренно не содержат тексты запросов.
 
+## Привязка codex-local задач к проекту Codex
+
+Для видимых persistent задач создайте в Codex отдельный локальный проект и используйте один
+и тот же абсолютный путь при развёртывании workspace и в `.env`:
+
+```powershell
+.\scripts\sync-rag-agent-workspace.ps1 `
+    -Mode Push `
+    -TargetRoot "C:\Dev\LLM\Codex_RAG_Test"
+
+# .env
+SECURE_RAG_AGENT_WORKSPACE_ROOT=C:\Dev\LLM\Codex_RAG_Test
+SECURE_RAG_CODEX_PERSIST_THREADS=1
+```
+
+Путь должен совпадать с корнем сохранённого проекта Codex буквально. Если указать другой
+каталог, SDK всё равно использует его как `cwd`, но задача останется в глобальном Recents.
+После изменения `.env` перезапустите API. `projectId` может появиться в интерфейсе не в момент
+создания задачи, а после завершения первого turn и обновления списка проектов.
+
+Sanitized provider input уже хранится в
+`runtime/state/requests/<request-id>/codex_input.txt`; исходные значения находятся отдельно в
+Marker Vault и никогда не копируются в Codex project workspace. Перенос sanitized artifacts
+в каталог проекта требует отдельной retention/encryption policy: проект Codex сам по себе не
+является защищённым хранилищем.
+
 ## Создание snapshot
 
 Сохраняйте backup на другом диске или защищённой сетевой папке вне clone:

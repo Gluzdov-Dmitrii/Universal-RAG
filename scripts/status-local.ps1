@@ -23,6 +23,22 @@ if (Test-Path -LiteralPath $localEnvironmentPath -PathType Leaf) {
 
 $apiPort = if ($env:SECURE_RAG_API_PORT) { [int]$env:SECURE_RAG_API_PORT } else { 8000 }
 $webUiPort = if ($env:OPEN_WEBUI_PORT) { [int]$env:OPEN_WEBUI_PORT } else { 3000 }
+$agentWorkspace = if ($env:SECURE_RAG_AGENT_WORKSPACE_ROOT) {
+    [IO.Path]::GetFullPath($env:SECURE_RAG_AGENT_WORKSPACE_ROOT)
+}
+else { $null }
+$agentWorkspaceState = if ($null -eq $agentWorkspace) {
+    "not configured"
+}
+elseif (-not (Test-Path -LiteralPath $agentWorkspace -PathType Container)) {
+    "missing"
+}
+elseif (-not (Test-Path -LiteralPath (Join-Path $agentWorkspace ".rag-workspace-manifest.json") -PathType Leaf)) {
+    "manifest missing"
+}
+else {
+    "ready; saved Codex project root must match this path"
+}
 
 function Test-HttpHealth {
     param([Parameter(Mandatory)][string]$Url)
@@ -91,6 +107,13 @@ if (Get-Command docker -ErrorAction SilentlyContinue) {
     State = if (Test-HttpHealth -Url "http://127.0.0.1:6333/readyz") { "healthy" } else { "not healthy" }
     PID = $null
     URL = "http://127.0.0.1:6333/dashboard"
+} | Format-List
+
+[PSCustomObject]@{
+    Component = "Codex RAG project workspace"
+    State = $agentWorkspaceState
+    PID = $null
+    URL = $agentWorkspace
 } | Format-List
 
 Write-Host "Docker Engine: $dockerState"
